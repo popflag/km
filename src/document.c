@@ -901,6 +901,48 @@ bool km_document_can_redo(const KmDocument *document) {
                 : document->history_head != NULL);
 }
 
+static bool splices_within_range(const KmOwnedSplice *splices, size_t count,
+                                 size_t start, size_t end) {
+    size_t i;
+
+    for (i = 0; i < count; ++i) {
+        if (splices[i].start < start || splices[i].end > end) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool km_document_can_undo_in_range(const KmDocument *document,
+                                   KmBytePos start, KmBytePos end) {
+    const KmUndoTxn *transaction;
+
+    if (document == NULL || start.v > end.v || end.v > text_len(document) ||
+        !is_boundary(document, start.v) || !is_boundary(document, end.v) ||
+        document->history_cursor == NULL) {
+        return false;
+    }
+    transaction = document->history_cursor;
+    return splices_within_range(transaction->inverse,
+                                transaction->splice_count, start.v, end.v);
+}
+
+bool km_document_can_redo_in_range(const KmDocument *document,
+                                   KmBytePos start, KmBytePos end) {
+    const KmUndoTxn *transaction;
+
+    if (document == NULL || start.v > end.v || end.v > text_len(document) ||
+        !is_boundary(document, start.v) || !is_boundary(document, end.v)) {
+        return false;
+    }
+    transaction = document->history_cursor != NULL
+                      ? document->history_cursor->next
+                      : document->history_head;
+    return transaction != NULL &&
+           splices_within_range(transaction->forward,
+                                transaction->splice_count, start.v, end.v);
+}
+
 KmStatus km_document_undo(KmDocument *document,
                           KmRevision expected_revision, KmError *error) {
     KmUndoTxn *transaction;

@@ -61,6 +61,10 @@ KmStatus km_document_apply(KmDocument *document, const KmSplice *splices,
                            size_t count, KmTxnMeta meta, KmError *error);
 bool km_document_can_undo(const KmDocument *document);
 bool km_document_can_redo(const KmDocument *document);
+bool km_document_can_undo_in_range(const KmDocument *document,
+                                   KmBytePos start, KmBytePos end);
+bool km_document_can_redo_in_range(const KmDocument *document,
+                                   KmBytePos start, KmBytePos end);
 KmStatus km_document_undo(KmDocument *document,
                           KmRevision expected_revision, KmError *error);
 KmStatus km_document_redo(KmDocument *document,

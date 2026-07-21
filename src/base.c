@@ -15,7 +15,7 @@ const char *km_status_string(KmStatus status) {
     case KM_ERR_INVALID: return "invalid argument";
     case KM_ERR_IO: return "I/O error";
     case KM_ERR_PERMISSION: return "permission denied";
-    case KM_ERR_CONFLICT: return "revision conflict";
+    case KM_ERR_CONFLICT: return "conflict";
     case KM_ERR_UNSUPPORTED: return "unsupported";
     case KM_ERR_CANCELLED: return "cancelled";
     }
