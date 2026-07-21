@@ -28,6 +28,7 @@ enum {
     KM_KEY_DOWN,
     KM_KEY_HOME,
     KM_KEY_END,
+    KM_KEY_TAB,
     KM_KEY_DELETE
 };
 

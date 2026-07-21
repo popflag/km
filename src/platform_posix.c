@@ -353,6 +353,9 @@ static void finish_key(KmEvent *event, uint32_t codepoint)
     } else if (codepoint == 8 || codepoint == 0x7f) {
         event->kind = KM_EVENT_KEY;
         event->codepoint = 0x7f;
+    } else if (codepoint == '\t') {
+        event->kind = KM_EVENT_KEY;
+        event->codepoint = KM_KEY_TAB;
     } else if (codepoint == '\r' || codepoint == '\n') {
         event->kind = KM_EVENT_TEXT;
         event->codepoint = '\n';

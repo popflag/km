@@ -133,7 +133,7 @@ static int run_probe(int terminate_with_signal, const char *path,
             goto kill_child;
         }
         if (wait_for_text(master, output, sizeof(output), &output_len,
-                          "\x1b[1;1Ha\x1b[2;1H\xe4\xb8\xadq", 2000) != 0) {
+                          " 2 \xe4\xb8\xadq", 2000) != 0) {
             goto kill_child;
         }
     } else if (second_path == NULL) {
@@ -160,18 +160,22 @@ static int run_probe(int terminate_with_signal, const char *path,
         static const unsigned char edit_first[] = {'\r', '!', 0x18, 0x13};
         static const unsigned char request_exit[] = {0x18, 0x03};
         static const unsigned char extended_command[] = {'\r', 0x1b, 'x'};
-        static const char save_all[] = "save-buffers-kill-terminal";
+        static const char save_all_prefix[] = "save-buffers-k";
+        size_t second_prefix_len = strlen(second_path) - 2;
+        size_t first_prefix_len = strlen(path) - 2;
         if (write_bytes(master, find_file, sizeof(find_file)) != 0 ||
             write_bytes(master, paste_start, sizeof(paste_start)) != 0 ||
-            write_bytes(master, second_path, strlen(second_path)) != 0 ||
+            write_bytes(master, second_path, second_prefix_len) != 0 ||
             write_bytes(master, paste_end, sizeof(paste_end)) != 0 ||
+            write_bytes(master, "\t", 1) != 0 ||
             write_bytes(master, open_second, sizeof(open_second)) != 0 ||
             wait_for_text(master, output, sizeof(output), &output_len,
                           "Opened", 2000) != 0 ||
             write_bytes(master, edit_second, sizeof(edit_second)) != 0 ||
             write_bytes(master, paste_start, sizeof(paste_start)) != 0 ||
-            write_bytes(master, path, strlen(path)) != 0 ||
+            write_bytes(master, path, first_prefix_len) != 0 ||
             write_bytes(master, paste_end, sizeof(paste_end)) != 0 ||
+            write_bytes(master, "\t", 1) != 0 ||
             write_bytes(master, edit_first, sizeof(edit_first)) != 0 ||
             wait_for_text(master, output, sizeof(output), &output_len,
                           "Wrote", 2000) != 0 ||
@@ -181,13 +185,16 @@ static int run_probe(int terminate_with_signal, const char *path,
             write_bytes(master, "n", 1) != 0 ||
             write_bytes(master, find_file, sizeof(find_file)) != 0 ||
             write_bytes(master, paste_start, sizeof(paste_start)) != 0 ||
-            write_bytes(master, second_path, strlen(second_path)) != 0 ||
+            write_bytes(master, second_path, second_prefix_len) != 0 ||
             write_bytes(master, paste_end, sizeof(paste_end)) != 0 ||
+            write_bytes(master, "\t", 1) != 0 ||
             write_bytes(master, extended_command,
                         sizeof(extended_command)) != 0 ||
             write_bytes(master, paste_start, sizeof(paste_start)) != 0 ||
-            write_bytes(master, save_all, sizeof(save_all) - 1) != 0 ||
+            write_bytes(master, save_all_prefix,
+                        sizeof(save_all_prefix) - 1) != 0 ||
             write_bytes(master, paste_end, sizeof(paste_end)) != 0 ||
+            write_bytes(master, "\t", 1) != 0 ||
             write_bytes(master, "\r", 1) != 0) {
             goto kill_child;
         }

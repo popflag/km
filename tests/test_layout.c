@@ -46,13 +46,14 @@ static void test_unicode_and_controls(void)
     CHECK(km_view_set_point(view, (KmBytePos){5}, &error) == KM_OK);
     CHECK(km_layout_view(buffer, view, 4, 12, 0, NULL, false, &grid, &layout,
                          &error) == KM_OK);
-    CHECK(layout.cursor_row == 0 && layout.cursor_column == 4);
-    check_glyph(grid, 0, 0, (const uint8_t *)"A", 1);
-    check_glyph(grid, 0, 1, (const uint8_t *)"^", 1);
-    check_glyph(grid, 0, 2, (const uint8_t *)"@", 1);
-    check_glyph(grid, 0, 3, combining, sizeof(combining));
-    check_glyph(grid, 0, 4, cjk, sizeof(cjk));
-    CHECK(km_cell_grid_cell(grid, 0, 4)->width == 2);
+    CHECK(layout.cursor_row == 0 && layout.cursor_column == 7);
+    check_glyph(grid, 0, 1, (const uint8_t *)"1", 1);
+    check_glyph(grid, 0, 3, (const uint8_t *)"A", 1);
+    check_glyph(grid, 0, 4, (const uint8_t *)"^", 1);
+    check_glyph(grid, 0, 5, (const uint8_t *)"@", 1);
+    check_glyph(grid, 0, 6, combining, sizeof(combining));
+    check_glyph(grid, 0, 7, cjk, sizeof(cjk));
+    CHECK(km_cell_grid_cell(grid, 0, 7)->width == 2);
     CHECK(km_cell_grid_encode_frame_vt(grid, layout.cursor_row,
                                        layout.cursor_column, &frame,
                                        &frame_len, &error) == KM_OK);
@@ -69,16 +70,16 @@ static void test_unicode_and_controls(void)
     CHECK(km_view_set_point(view, (KmBytePos){8}, &error) == KM_OK);
     CHECK(km_layout_view(buffer, view, 4, 12, 0, NULL, false, &grid, &layout,
                          &error) == KM_OK);
-    CHECK(km_cell_grid_cell(grid, 0, 4)->style_id == KM_STYLE_REGION);
-    CHECK(km_cell_grid_cell(grid, 0, 5)->style_id == KM_STYLE_REGION);
+    CHECK(km_cell_grid_cell(grid, 0, 7)->style_id == KM_STYLE_REGION);
+    CHECK(km_cell_grid_cell(grid, 0, 8)->style_id == KM_STYLE_REGION);
     km_cell_grid_destroy(grid);
     km_command_loop_destroy(loop);
 
     CHECK(km_view_set_point(view, (KmBytePos){9}, &error) == KM_OK);
     CHECK(km_layout_view(buffer, view, 4, 12, 0, "Quit", false, &grid, &layout,
                          &error) == KM_OK);
-    CHECK(layout.cursor_row == 1 && layout.cursor_column == 0);
-    check_glyph(grid, 1, 0, (const uint8_t *)"B", 1);
+    CHECK(layout.cursor_row == 1 && layout.cursor_column == 3);
+    check_glyph(grid, 1, 3, (const uint8_t *)"B", 1);
     km_cell_grid_destroy(grid);
     CHECK(km_layout_view(buffer, view, 4, 12, 0,
                          "Find: \xe4\xb8\xad", true, &grid, &layout,
@@ -117,9 +118,10 @@ static void test_wrap_and_viewport(void)
     CHECK(km_view_set_point(view, (KmBytePos){sizeof(text) - 1}, &error) == KM_OK);
     CHECK(km_layout_view(buffer, view, 3, 4, 0, NULL, false, &grid, &layout,
                          &error) == KM_OK);
-    CHECK(layout.scroll_row == 1);
-    CHECK(layout.cursor_row == 1 && layout.cursor_column == 1);
-    check_glyph(grid, 1, 0, (const uint8_t *)"i", 1);
+    CHECK(layout.scroll_row == 8);
+    CHECK(layout.cursor_row == 1 && layout.cursor_column == 3);
+    check_glyph(grid, 0, 3, (const uint8_t *)"i", 1);
+    check_glyph(grid, 0, 0, (const uint8_t *)" ", 1);
     km_cell_grid_destroy(grid);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
@@ -128,10 +130,10 @@ static void test_wrap_and_viewport(void)
           KM_OK);
     CHECK(km_view_create(buffer, &view, &error) == KM_OK);
     CHECK(km_view_set_point(view, (KmBytePos){3}, &error) == KM_OK);
-    CHECK(km_layout_view(buffer, view, 3, 4, 0, NULL, false, &grid, &layout,
+    CHECK(km_layout_view(buffer, view, 3, 7, 0, NULL, false, &grid, &layout,
                          &error) == KM_OK);
-    CHECK(layout.cursor_row == 1 && layout.cursor_column == 0);
-    CHECK(km_cell_grid_cell(grid, 1, 0)->width == 2);
+    CHECK(layout.cursor_row == 1 && layout.cursor_column == 3);
+    CHECK(km_cell_grid_cell(grid, 1, 3)->width == 2);
     km_cell_grid_destroy(grid);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
@@ -140,9 +142,9 @@ static void test_wrap_and_viewport(void)
           KM_OK);
     CHECK(km_view_create(buffer, &view, &error) == KM_OK);
     CHECK(km_view_set_point(view, (KmBytePos){1}, &error) == KM_OK);
-    CHECK(km_layout_view(buffer, view, 2, 4, 0, NULL, false, &grid, &layout,
+    CHECK(km_layout_view(buffer, view, 2, 8, 0, NULL, false, &grid, &layout,
                          &error) == KM_OK);
-    CHECK(layout.cursor_row == 0 && layout.cursor_column == 1);
+    CHECK(layout.cursor_row == 0 && layout.cursor_column == 4);
     km_cell_grid_destroy(grid);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
@@ -152,8 +154,8 @@ static void test_wrap_and_viewport(void)
     CHECK(km_view_create(buffer, &view, &error) == KM_OK);
     CHECK(km_layout_view(buffer, view, 2, 4, 0, NULL, false, &grid, &layout,
                          &error) == KM_OK);
-    check_glyph(grid, 0, 0, displayed_combining, sizeof(displayed_combining));
-    CHECK(km_cell_grid_cell(grid, 0, 0)->width == 1);
+    check_glyph(grid, 0, 3, displayed_combining, sizeof(displayed_combining));
+    CHECK(km_cell_grid_cell(grid, 0, 3)->width == 1);
     km_cell_grid_destroy(grid);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
@@ -161,9 +163,9 @@ static void test_wrap_and_viewport(void)
     CHECK(km_buffer_create_base(regional_indicator, sizeof(regional_indicator),
                                 &buffer, &error) == KM_OK);
     CHECK(km_view_create(buffer, &view, &error) == KM_OK);
-    CHECK(km_layout_view(buffer, view, 2, 4, 0, NULL, false, &grid, &layout,
+    CHECK(km_layout_view(buffer, view, 2, 8, 0, NULL, false, &grid, &layout,
                          &error) == KM_OK);
-    CHECK(km_cell_grid_cell(grid, 0, 0)->width == 1);
+    CHECK(km_cell_grid_cell(grid, 0, 3)->width == 1);
     km_cell_grid_destroy(grid);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
@@ -171,9 +173,9 @@ static void test_wrap_and_viewport(void)
     CHECK(km_buffer_create_base(flag_pair, sizeof(flag_pair), &buffer, &error) ==
           KM_OK);
     CHECK(km_view_create(buffer, &view, &error) == KM_OK);
-    CHECK(km_layout_view(buffer, view, 2, 4, 0, NULL, false, &grid, &layout,
+    CHECK(km_layout_view(buffer, view, 2, 8, 0, NULL, false, &grid, &layout,
                          &error) == KM_OK);
-    CHECK(km_cell_grid_cell(grid, 0, 0)->width == 2);
+    CHECK(km_cell_grid_cell(grid, 0, 3)->width == 2);
     km_cell_grid_destroy(grid);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
@@ -204,6 +206,65 @@ static void test_unicode_file_name_status(void)
     check_glyph(grid, 1, 13, cjk, sizeof(cjk));
     CHECK(km_cell_grid_cell(grid, 1, 13)->width == 2);
     CHECK(km_cell_grid_cell(grid, 1, 14)->flags == KM_CELL_CONTINUATION);
+    CHECK(km_cell_grid_cell(grid, 1, 13)->style_id == KM_STYLE_MODELINE);
+    CHECK(km_cell_grid_cell(grid, 1, 39)->style_id == KM_STYLE_MODELINE);
+    km_cell_grid_destroy(grid);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+}
+
+static void test_line_number_gutter(void)
+{
+    static const uint8_t lines[] = "0\n1\n2\n3\n4\n5\n6\n7\n8\n9\nx\ny";
+    KmBuffer *buffer = NULL;
+    KmView *view = NULL;
+    KmCellGrid *grid = NULL;
+    KmLayoutResult layout;
+    KmError error;
+
+    CHECK(km_buffer_create_base(lines, sizeof(lines) - 1, &buffer, &error) ==
+          KM_OK);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){20}, &error) == KM_OK);
+    CHECK(km_layout_view(buffer, view, 3, 8, 0, NULL, false, &grid, &layout,
+                         &error) == KM_OK);
+    CHECK(layout.scroll_row == 9);
+    CHECK(layout.cursor_row == 1 && layout.cursor_column == 4);
+    check_glyph(grid, 1, 1, (const uint8_t *)"1", 1);
+    check_glyph(grid, 1, 2, (const uint8_t *)"1", 1);
+    check_glyph(grid, 1, 4, (const uint8_t *)"x", 1);
+    km_cell_grid_destroy(grid);
+    CHECK(km_buffer_narrow(buffer, (KmBytePos){18},
+                           (KmBytePos){sizeof(lines) - 1}, &error) == KM_OK);
+    CHECK(km_layout_view(buffer, view, 4, 8, 0, NULL, false, &grid, &layout,
+                         &error) == KM_OK);
+    check_glyph(grid, 0, 1, (const uint8_t *)"1", 1);
+    check_glyph(grid, 0, 2, (const uint8_t *)"0", 1);
+    CHECK(layout.hard_line == 10);
+    km_cell_grid_destroy(grid);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    CHECK(km_buffer_create_base((const uint8_t *)"abcd\nx", 6, &buffer,
+                                &error) == KM_OK);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){5}, &error) == KM_OK);
+    CHECK(km_layout_view(buffer, view, 3, 7, 0, NULL, false, &grid, &layout,
+                         &error) == KM_OK);
+    CHECK(layout.cursor_row == 1 && layout.cursor_column == 3);
+    check_glyph(grid, 1, 1, (const uint8_t *)"2", 1);
+    check_glyph(grid, 1, 3, (const uint8_t *)"x", 1);
+    km_cell_grid_destroy(grid);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    CHECK(km_buffer_create_base((const uint8_t *)"a", 1, &buffer, &error) ==
+          KM_OK);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_layout_view(buffer, view, 2, 1, 0, NULL, false, &grid, &layout,
+                         &error) == KM_OK);
+    CHECK(layout.cursor_column == 0);
+    check_glyph(grid, 0, 0, (const uint8_t *)"a", 1);
     km_cell_grid_destroy(grid);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
@@ -214,6 +275,7 @@ int main(void)
     test_unicode_and_controls();
     test_wrap_and_viewport();
     test_unicode_file_name_status();
+    test_line_number_gutter();
     puts("layout tests passed");
     return 0;
 }

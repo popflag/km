@@ -875,6 +875,10 @@ static void test_minibuffer_requests(void)
     CHECK(dispatch_paste(loop, view, cjk, sizeof(cjk), &error) == KM_OK);
     CHECK(dispatch_key(loop, view, 0x7f, 0, &error) == KM_OK);
     CHECK(dispatch_paste(loop, view, cjk, sizeof(cjk), &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, KM_KEY_TAB, 0, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_COMPLETE_FILE);
+    CHECK(km_command_loop_prompt_active(loop));
+    km_command_loop_clear_request(loop);
     km_command_loop_format_prompt(loop, prompt, sizeof(prompt));
     CHECK(strcmp(prompt, "Find file: note-\xe4\xb8\xad") == 0);
     CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
@@ -886,9 +890,17 @@ static void test_minibuffer_requests(void)
 
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_key(loop, view, 'b', 0, &error) == KM_OK);
+    CHECK(dispatch_text_block(loop, view, (const uint8_t *)"*s", 2,
+                              &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, KM_KEY_TAB, 0, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) ==
+          KM_COMMAND_REQUEST_COMPLETE_BUFFER);
+    CHECK(km_command_loop_prompt_active(loop));
+    km_command_loop_clear_request(loop);
+    CHECK(km_command_loop_set_prompt_text(loop, "*scratch*", &error) == KM_OK);
     CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
     CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_SWITCH_BUFFER);
-    CHECK(strcmp(km_command_loop_request_text(loop), "") == 0);
+    CHECK(strcmp(km_command_loop_request_text(loop), "*scratch*") == 0);
     km_command_loop_clear_request(loop);
 
     CHECK(dispatch_text_block(loop, view, (const uint8_t *)"abc", 3,
@@ -896,8 +908,11 @@ static void test_minibuffer_requests(void)
     CHECK(km_view_point(view).v == 3);
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
     CHECK(dispatch_text_block(loop, view,
-                              (const uint8_t *)"beginning-of-line", 17,
+                              (const uint8_t *)"beg", 3,
                               &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, KM_KEY_TAB, 0, &error) == KM_OK);
+    km_command_loop_format_prompt(loop, prompt, sizeof(prompt));
+    CHECK(strcmp(prompt, "M-x beginning-of-line") == 0);
     CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
     CHECK(km_view_point(view).v == 0);
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);

@@ -124,7 +124,7 @@ static int fail(const char *message)
 int main(void)
 {
     static const unsigned char input[] = {
-        0x07, 0x1f, 0xC2, 'A', '\r', 0x7f, 0x00,
+        0x07, 0x1f, '\t', 0xC2, 'A', '\r', 0x7f, 0x00,
         0x1b, '[', 'A', 0x1b, '[', '3', '~', 0x1b, '3',
 #ifndef _WIN32
         0x1b, '[', '2', '0', '0', '~', 'p', 0, 'q',
@@ -170,6 +170,12 @@ int main(void)
         event.modifiers != KM_MOD_CTRL) {
         km_platform_close(platform);
         return fail("C-/ was not normalized as a control key event");
+    }
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_KEY || event.codepoint != KM_KEY_TAB ||
+        event.modifiers != 0) {
+        km_platform_close(platform);
+        return fail("Tab was not normalized as a named key event");
     }
     if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
         event.kind != KM_EVENT_TEXT || event.codepoint != 0xFFFD) {

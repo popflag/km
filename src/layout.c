@@ -13,6 +13,8 @@ typedef struct {
     size_t len;
     size_t point;
     size_t columns;
+    size_t gutter_width;
+    size_t line_number_base;
     size_t row;
     size_t column;
     size_t hard_line;
@@ -56,20 +58,74 @@ static void record_cursor(KmLayoutPass *pass, size_t offset,
     if (offset == pass->point) {
         normalize_cursor(pass, &row, &column);
         pass->cursor_row = row;
-        pass->cursor_column = column;
+        pass->cursor_column = pass->gutter_width + column;
         pass->cursor_hard_line = pass->hard_line;
         pass->cursor_hard_column = pass->hard_column;
         pass->cursor_set = true;
     }
 }
 
-static void wrap_before(KmLayoutPass *pass, size_t width)
+static KmStatus draw_line_number(KmLayoutPass *pass, bool numbered,
+                                 KmError *error)
+{
+    char digits[32];
+    size_t digit_len = 0;
+    size_t digit_offset = 0;
+    size_t number_columns = pass->gutter_width == 0
+                                ? 0
+                                : pass->gutter_width - 1;
+    size_t start = number_columns;
+    size_t column;
+
+    if (numbered && number_columns != 0) {
+        size_t line_number;
+        if (pass->line_number_base == SIZE_MAX ||
+            pass->hard_line > SIZE_MAX - pass->line_number_base - 1) {
+            return fail(error, KM_ERR_INVALID, "format line number");
+        }
+        line_number = pass->line_number_base + pass->hard_line + 1;
+        int length = snprintf(digits, sizeof(digits), "%llu",
+                              (unsigned long long)line_number);
+        if (length < 0 || (size_t)length >= sizeof(digits)) {
+            return fail(error, KM_ERR_INVALID, "format line number");
+        }
+        digit_len = (size_t)length;
+        if (digit_len > number_columns) {
+            digit_offset = digit_len - number_columns;
+            digit_len = number_columns;
+            start = 0;
+        } else {
+            start = number_columns - digit_len;
+        }
+    }
+    if (pass->grid == NULL || pass->row < pass->scroll_row ||
+        pass->row - pass->scroll_row >= pass->content_rows) {
+        return KM_OK;
+    }
+    for (column = 0; column < pass->gutter_width; ++column) {
+        uint8_t glyph = ' ';
+        if (numbered && column >= start && column < start + digit_len) {
+            glyph = (uint8_t)digits[digit_offset + column - start];
+        }
+        {
+            KmStatus status = km_cell_grid_put(
+                pass->grid, pass->row - pass->scroll_row, column,
+                &glyph, 1, 1, KM_STYLE_DEFAULT, error);
+            if (status != KM_OK) return status;
+        }
+    }
+    return KM_OK;
+}
+
+static KmStatus wrap_before(KmLayoutPass *pass, size_t width, KmError *error)
 {
     if (pass->column == pass->columns ||
         width > pass->columns - pass->column) {
         ++pass->row;
         pass->column = 0;
+        return draw_line_number(pass, false, error);
     }
+    return KM_OK;
 }
 
 static KmStatus draw_glyph(KmLayoutPass *pass, const uint8_t *glyph,
@@ -78,7 +134,8 @@ static KmStatus draw_glyph(KmLayoutPass *pass, const uint8_t *glyph,
     if (pass->grid != NULL && pass->row >= pass->scroll_row &&
         pass->row - pass->scroll_row < pass->content_rows) {
         return km_cell_grid_put(pass->grid, pass->row - pass->scroll_row,
-                                pass->column, glyph, glyph_len, width,
+                                pass->gutter_width + pass->column,
+                                glyph, glyph_len, width,
                                 pass->style_id, error);
     }
     return KM_OK;
@@ -97,7 +154,8 @@ static KmStatus draw_ascii_cell(KmLayoutPass *pass, uint8_t glyph,
 {
     KmStatus status;
 
-    wrap_before(pass, 1);
+    status = wrap_before(pass, 1, error);
+    if (status != KM_OK) return status;
     status = draw_glyph(pass, &glyph, 1, 1, error);
     if (status != KM_OK) return status;
     ++pass->column;
@@ -147,7 +205,7 @@ static KmStatus record_inside_grapheme(KmLayoutPass *pass, size_t start,
                             (prefix_width < width ? prefix_width : width);
             normalize_cursor(pass, &row, &column);
             pass->cursor_row = row;
-            pass->cursor_column = column;
+            pass->cursor_column = pass->gutter_width + column;
             pass->cursor_hard_line = pass->hard_line;
             pass->cursor_hard_column = pass->hard_column + prefix_width;
             pass->cursor_set = true;
@@ -160,13 +218,16 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
 {
     static const uint8_t replacement[] = {0xef, 0xbf, 0xbd};
     size_t offset = 0;
+    KmStatus status;
 
     record_cursor(pass, 0, 0, 0);
+    status = draw_line_number(pass, true, error);
+    if (status != KM_OK) return status;
     while (offset < pass->len) {
         utf8proc_int32_t codepoint;
         size_t consumed;
-        KmStatus status = km_unicode_decode(pass->text, pass->len, offset,
-                                            &codepoint, &consumed, error);
+        status = km_unicode_decode(pass->text, pass->len, offset,
+                                   &codepoint, &consumed, error);
         if (status != KM_OK) return status;
         if (codepoint == '\n') {
             bool already_wrapped = pass->column == pass->columns;
@@ -180,6 +241,8 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
             ++pass->hard_line;
             pass->hard_column = 0;
             offset += consumed;
+            status = draw_line_number(pass, true, error);
+            if (status != KM_OK) return status;
             record_cursor(pass, offset, pass->row, pass->column);
         } else if (codepoint == '\t') {
             size_t spaces;
@@ -218,7 +281,8 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
             select_region_style(pass, offset, end);
             too_wide = width > pass->columns;
             if (too_wide) width = 1;
-            wrap_before(pass, width);
+            status = wrap_before(pass, width, error);
+            if (status != KM_OK) return status;
             record_cursor(pass, offset, pass->row, pass->column);
             status = record_inside_grapheme(pass, offset, end, width, error);
             if (status != KM_OK) return status;
@@ -260,6 +324,7 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
 
 static KmStatus put_status_text(KmCellGrid *grid, size_t row, size_t columns,
                                 size_t *column, const char *text,
+                                uint16_t style_id,
                                 KmError *error)
 {
     static const uint8_t replacement[] = {0xef, 0xbf, 0xbd};
@@ -299,7 +364,7 @@ static KmStatus put_status_text(KmCellGrid *grid, size_t row, size_t columns,
         }
         if (width > columns - *column) break;
         status = km_cell_grid_put(grid, row, *column, glyph, glyph_len, width,
-                                  KM_STYLE_DEFAULT, error);
+                                  style_id, error);
         if (status != KM_OK) return status;
         *column += width;
     }
@@ -317,30 +382,93 @@ static KmStatus put_status(KmCellGrid *grid, size_t row, size_t columns,
                           (unsigned long long)result->hard_column + 1u);
     size_t column = 0;
     KmStatus status;
+    size_t fill;
 
     if (length < 0 || (size_t)length >= sizeof(location)) {
         return fail(error, KM_ERR_INVALID, "format status line");
     }
+    for (fill = 0; fill < columns; ++fill) {
+        status = km_cell_grid_put(grid, row, fill, (const uint8_t *)" ", 1, 1,
+                                  KM_STYLE_MODELINE, error);
+        if (status != KM_OK) return status;
+    }
     status = put_status_text(grid, row, columns, &column,
-                             modified ? "** " : "-- ", error);
+                             modified ? "** " : "-- ", KM_STYLE_MODELINE,
+                             error);
     if (status == KM_OK) {
-        status = put_status_text(grid, row, columns, &column, name, error);
+        status = put_status_text(grid, row, columns, &column, name,
+                                 KM_STYLE_MODELINE, error);
     }
     if (status == KM_OK && region_active) {
         status = put_status_text(grid, row, columns, &column, " [Region]",
-                                 error);
+                                 KM_STYLE_MODELINE, error);
     }
     if (status == KM_OK) {
-        status = put_status_text(grid, row, columns, &column, location, error);
+        status = put_status_text(grid, row, columns, &column, location,
+                                 KM_STYLE_MODELINE, error);
     }
     if (status == KM_OK && message != NULL && message[0] != '\0') {
-        status = put_status_text(grid, row, columns, &column, "  ", error);
+        status = put_status_text(grid, row, columns, &column, "  ",
+                                 KM_STYLE_MODELINE, error);
         if (status == KM_OK) {
             status = put_status_text(grid, row, columns, &column, message,
-                                     error);
+                                     KM_STYLE_MODELINE, error);
         }
     }
     return status;
+}
+
+static KmStatus line_number_base(const KmDocument *document, KmBytePos start,
+                                 size_t *out_base, KmError *error)
+{
+    /* ponytail: redraw-time scan; add a line index only after profiling. */
+    uint8_t bytes[4096];
+    KmTextIter iterator;
+    size_t remaining = start.v;
+    size_t base = 0;
+    KmStatus status = km_document_iter_init(document, (KmBytePos){0},
+                                            &iterator, error);
+
+    if (status != KM_OK) return status;
+    while (remaining != 0) {
+        size_t count;
+        bool eof;
+        size_t capacity = remaining < sizeof(bytes) ? remaining : sizeof(bytes);
+        status = km_text_iter_read(&iterator, bytes, capacity, &count, &eof,
+                                   error);
+        if (status != KM_OK) return status;
+        for (size_t i = 0; i < count; ++i) {
+            if (bytes[i] == '\n') ++base;
+        }
+        remaining -= count;
+        if (count == 0 || eof) break;
+    }
+    if (remaining != 0) return fail(error, KM_ERR_INVALID, "line number");
+    *out_base = base;
+    return KM_OK;
+}
+
+static size_t line_number_gutter(const uint8_t *text, size_t len,
+                                 size_t base, size_t columns)
+{
+    size_t lines = 1;
+    size_t digits = 1;
+    size_t i;
+    size_t value;
+    size_t gutter;
+
+    for (i = 0; i < len; ++i) {
+        if (text[i] == '\n' && lines != SIZE_MAX) ++lines;
+    }
+    value = base <= SIZE_MAX - lines ? base + lines : SIZE_MAX;
+    while (value >= 10) {
+        value /= 10;
+        ++digits;
+    }
+    gutter = digits > SIZE_MAX - 2 ? SIZE_MAX : digits + 2;
+    if (columns <= 1) return 0;
+    if (gutter >= columns) gutter = columns - 1;
+    return gutter;
 }
 
 KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
@@ -357,6 +485,9 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     uint8_t *text = NULL;
     size_t len;
     size_t content_rows;
+    size_t gutter_width;
+    size_t text_columns;
+    size_t line_base;
     KmCellGrid *grid = NULL;
     KmLayoutPass pass = {0};
     KmLayoutResult result = {0};
@@ -387,10 +518,16 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
         if (status != KM_OK) goto fail;
     }
     content_rows = rows > 1 ? rows - 1 : 1;
+    status = line_number_base(document, start, &line_base, error);
+    if (status != KM_OK) goto fail;
+    gutter_width = line_number_gutter(text, len, line_base, columns);
+    text_columns = columns - gutter_width;
     pass.text = text;
     pass.len = len;
     pass.point = point.v - start.v;
-    pass.columns = columns;
+    pass.columns = text_columns;
+    pass.gutter_width = gutter_width;
+    pass.line_number_base = line_base;
     pass.content_rows = content_rows;
     pass.region_active = km_buffer_mark_active(buffer);
     pass.region_start = mark.v < point.v ? mark.v - start.v : point.v - start.v;
@@ -405,7 +542,7 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     result.cursor_row = pass.cursor_row - scroll_row;
     result.cursor_column = pass.cursor_column;
     result.scroll_row = scroll_row;
-    result.hard_line = pass.cursor_hard_line;
+    result.hard_line = line_base + pass.cursor_hard_line;
     result.hard_column = pass.cursor_hard_column;
 
     status = km_cell_grid_create(rows, columns, &grid, error);
@@ -414,7 +551,9 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     pass.text = text;
     pass.len = len;
     pass.point = point.v - start.v;
-    pass.columns = columns;
+    pass.columns = text_columns;
+    pass.gutter_width = gutter_width;
+    pass.line_number_base = line_base;
     pass.scroll_row = scroll_row;
     pass.content_rows = content_rows;
     pass.grid = grid;
@@ -426,7 +565,8 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     if (prompt_active) {
         size_t prompt_column = 0;
         status = put_status_text(grid, rows - 1, columns, &prompt_column,
-                                 message == NULL ? "" : message, error);
+                                 message == NULL ? "" : message,
+                                 KM_STYLE_DEFAULT, error);
         if (status != KM_OK) goto fail;
         result.cursor_row = rows - 1;
         result.cursor_column = prompt_column < columns

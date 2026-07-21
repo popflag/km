@@ -21,7 +21,8 @@ enum {
 
 enum {
     KM_STYLE_DEFAULT = 0,
-    KM_STYLE_REGION
+    KM_STYLE_REGION,
+    KM_STYLE_MODELINE
 };
 
 KmStatus km_cell_grid_create(size_t rows, size_t columns,

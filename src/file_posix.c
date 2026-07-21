@@ -3,6 +3,7 @@
 #include "utf8proc.h"
 
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -177,6 +178,177 @@ KmStatus km_path_from_utf8(const char *path, KmPath **out_path, KmError *error)
 {
     km_error_clear(error);
     return path_from_bytes(path, out_path, error);
+}
+
+static bool strict_utf8_name(const char *name, size_t len)
+{
+    size_t offset = 0;
+
+    while (offset < len) {
+        utf8proc_int32_t codepoint;
+        utf8proc_ssize_t consumed;
+        if (len - offset > (size_t)PTRDIFF_MAX) return false;
+        consumed = utf8proc_iterate(
+            (const utf8proc_uint8_t *)name + offset,
+            (utf8proc_ssize_t)(len - offset), &codepoint);
+        if (consumed <= 0 || codepoint < 0x20 || codepoint == 0x7f) {
+            return false;
+        }
+        offset += (size_t)consumed;
+    }
+    return true;
+}
+
+static size_t utf8_common_prefix(const char *left, size_t left_len,
+                                 const char *right, size_t right_len)
+{
+    size_t common = left_len < right_len ? left_len : right_len;
+    size_t offset = 0;
+
+    while (offset < common && left[offset] == right[offset]) ++offset;
+    common = offset;
+    while (common != 0 && common < left_len &&
+           ((unsigned char)left[common] & 0xc0u) == 0x80u) {
+        --common;
+    }
+    return common;
+}
+
+static bool completion_entry_is_directory(const char *directory,
+                                           const char *name)
+{
+    size_t directory_len = strlen(directory);
+    size_t name_len = strlen(name);
+    char *path;
+    struct stat info;
+    bool result;
+
+    if (directory_len > SIZE_MAX - name_len - 2) return false;
+    path = (char *)malloc(directory_len + name_len + 2);
+    if (path == NULL) return false;
+    memcpy(path, directory, directory_len);
+    if (directory_len != 0 && directory[directory_len - 1] != '/') {
+        path[directory_len++] = '/';
+    }
+    memcpy(path + directory_len, name, name_len + 1);
+    result = stat(path, &info) == 0 && S_ISDIR(info.st_mode);
+    free(path);
+    return result;
+}
+
+KmStatus km_path_complete_utf8(const char *prefix, char **out_completion,
+                               KmError *error)
+{
+    const char *slash;
+    const char *name_prefix;
+    size_t head_len;
+    size_t prefix_len;
+    char *directory = NULL;
+    char *common = NULL;
+    size_t common_len = 0;
+    size_t matches = 0;
+    bool only_is_directory = false;
+    DIR *stream = NULL;
+    int read_error = 0;
+    KmStatus status = KM_OK;
+
+    km_error_clear(error);
+    if (prefix == NULL || out_completion == NULL) {
+        return fail(error, KM_ERR_INVALID, "complete file path", 0);
+    }
+    *out_completion = NULL;
+    if (!strict_utf8_name(prefix, strlen(prefix))) {
+        return fail(error, KM_ERR_INVALID, "complete file path", 0);
+    }
+    slash = strrchr(prefix, '/');
+    head_len = slash == NULL ? 0 : (size_t)(slash - prefix) + 1;
+    name_prefix = prefix + head_len;
+    prefix_len = strlen(name_prefix);
+    if (head_len == 0) {
+        directory = (char *)malloc(2);
+        if (directory != NULL) memcpy(directory, ".", 2);
+    } else {
+        size_t directory_len = head_len == 1 ? 1 : head_len - 1;
+        directory = (char *)malloc(directory_len + 1);
+        if (directory != NULL) {
+            memcpy(directory, prefix, directory_len);
+            directory[directory_len] = '\0';
+        }
+    }
+    if (directory == NULL) return fail(error, KM_ERR_OOM, "complete file path", 0);
+    stream = opendir(directory);
+    if (stream == NULL) {
+        int code = errno;
+        free(directory);
+        if (code == ENOENT || code == ENOTDIR) return KM_OK;
+        return fail(error, KM_ERR_IO, "complete file path", code);
+    }
+    for (;;) {
+        struct dirent *entry;
+        size_t name_len;
+        errno = 0;
+        entry = readdir(stream);
+        if (entry == NULL) {
+            read_error = errno;
+            break;
+        }
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+        name_len = strlen(entry->d_name);
+        if (!strict_utf8_name(entry->d_name, name_len) ||
+            name_len < prefix_len ||
+            (prefix_len != 0 &&
+             memcmp(entry->d_name, name_prefix, prefix_len) != 0)) {
+            continue;
+        }
+        if (matches == 0) {
+            common = (char *)malloc(name_len + 1);
+            if (common == NULL) {
+                status = fail(error, KM_ERR_OOM, "complete file path", 0);
+                break;
+            }
+            memcpy(common, entry->d_name, name_len + 1);
+            common_len = name_len;
+            only_is_directory = completion_entry_is_directory(
+                directory, entry->d_name);
+        } else {
+            common_len = utf8_common_prefix(common, common_len,
+                                            entry->d_name, name_len);
+            only_is_directory = false;
+        }
+        ++matches;
+    }
+    if (status == KM_OK && read_error != 0) {
+        status = fail(error, KM_ERR_IO, "complete file path", read_error);
+    }
+    if (closedir(stream) != 0 && status == KM_OK) {
+        status = fail(error, KM_ERR_IO, "complete file path", errno);
+    }
+    if (status == KM_OK && matches != 0) {
+        size_t suffix = only_is_directory ? 1 : 0;
+        if (head_len > SIZE_MAX - common_len - suffix - 1) {
+            status = fail(error, KM_ERR_OOM, "complete file path", 0);
+        } else {
+            *out_completion = (char *)malloc(head_len + common_len + suffix + 1);
+            if (*out_completion == NULL) {
+                status = fail(error, KM_ERR_OOM, "complete file path", 0);
+            } else {
+                memcpy(*out_completion, prefix, head_len);
+                memcpy(*out_completion + head_len, common, common_len);
+                if (suffix != 0) (*out_completion)[head_len + common_len] = '/';
+                (*out_completion)[head_len + common_len + suffix] = '\0';
+            }
+        }
+    }
+    if (status != KM_OK) {
+        free(*out_completion);
+        *out_completion = NULL;
+    }
+    free(common);
+    free(directory);
+    return status;
 }
 
 void km_path_destroy(KmPath *path)

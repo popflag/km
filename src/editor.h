@@ -19,7 +19,9 @@ typedef enum {
     KM_COMMAND_REQUEST_EXIT_CONFIRMED,
     KM_COMMAND_REQUEST_FIND_FILE,
     KM_COMMAND_REQUEST_SWITCH_BUFFER,
-    KM_COMMAND_REQUEST_KILL_BUFFER
+    KM_COMMAND_REQUEST_KILL_BUFFER,
+    KM_COMMAND_REQUEST_COMPLETE_FILE,
+    KM_COMMAND_REQUEST_COMPLETE_BUFFER
 } KmCommandRequest;
 
 typedef enum {
@@ -102,6 +104,8 @@ void km_command_loop_clear_quit(KmCommandLoop *loop);
 KmCommandRequest km_command_loop_request(const KmCommandLoop *loop);
 const char *km_command_loop_request_text(const KmCommandLoop *loop);
 void km_command_loop_clear_request(KmCommandLoop *loop);
+KmStatus km_command_loop_set_prompt_text(KmCommandLoop *loop,
+                                         const char *text, KmError *error);
 KmStatus km_command_loop_confirm_exit(KmCommandLoop *loop, KmError *error);
 bool km_command_loop_search_active(const KmCommandLoop *loop);
 bool km_command_loop_prompt_active(const KmCommandLoop *loop);

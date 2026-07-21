@@ -50,7 +50,14 @@
 - `M-x` 可执行当前静态 registry 中的编辑命令，以及 `find-file`、
   `switch-to-buffer`、`kill-buffer`、`save-buffer` 和
   `save-buffers-kill-terminal`；后者先保存全部 modified visited Buffer，任一
-  保存失败保持会话打开。当前尚无补全、历史或动态命令注册。
+  保存失败保持会话打开。
+- minibuffer 的 Tab 对 `M-x`、Buffer 名和文件路径执行确定性的最长公共前缀
+  补全；唯一目录补全追加路径分隔符。POSIX 中无法由当前 UTF-8 minibuffer
+  无损输入的非 UTF-8/control 文件名会被补全枚举跳过。
+- 正文显示 document-global logical line number gutter；soft-wrap continuation
+  gutter 留空。行号宽度参与两次 layout pass 的 wrap/cursor/scroll 计算，终端
+  太窄时优先保留一个正文 cell。mode line 使用独立的 bold+reverse style，
+  继续显示 modified、Buffer 名、region 与 line/column。
 - 当前 kill ring 只有一个 entry；kill coalescing、`yank-pop` 和完整 Emacs
   undo 遍历仍需差分测试后扩展。
 - POSIX 输入识别 ESC Meta、常见 CSI/SS3 方向键和 bracketed paste；Win32
@@ -58,8 +65,9 @@
 - Renderer 当前仍执行完整 CellGrid frame 输出；front/back row diff 是下一
   个纯性能步骤，不影响上述编辑和数据安全契约。
 
-当前纵切不等于“完整 GNU Emacs”。多 Window、minibuffer 补全/历史、
-rectangle、完整 search/replace、keyboard macro、mode/keymap 扩展和插件仍按
+当前纵切不等于“完整 GNU Emacs”。多 Window、minibuffer 候选弹窗、历史与
+模糊匹配、rectangle、完整 search/replace、keyboard macro、mode/keymap
+扩展和插件仍按
 后续 Phase 分别冻结行为与实现。
 
 尚待产品层冻结的两项：

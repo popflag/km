@@ -29,6 +29,9 @@ int main(void)
     char alias_path[MAX_PATH];
     char missing_lower[MAX_PATH];
     char missing_upper[MAX_PATH];
+    char completion_prefix[MAX_PATH];
+    char folder[MAX_PATH];
+    char *completion = NULL;
     char temporary[MAX_PATH];
     KmPath *opaque = NULL;
     KmFile *file = NULL;
@@ -55,6 +58,24 @@ int main(void)
     CHECK(stream != NULL);
     CHECK(fwrite("a\r\n", 1, 3, stream) == 3);
     CHECK(fclose(stream) == 0);
+    CHECK(snprintf(completion_prefix, sizeof(completion_prefix), "%s\\fi",
+                   temporary) > 0);
+    CHECK(km_path_complete_utf8(completion_prefix, &completion, &error) ==
+          KM_OK);
+    CHECK(completion != NULL && strcmp(completion, path) == 0);
+    free(completion);
+    completion = NULL;
+    CHECK(snprintf(folder, sizeof(folder), "%s\\folder", temporary) > 0);
+    CHECK(CreateDirectoryA(folder, NULL));
+    CHECK(snprintf(completion_prefix, sizeof(completion_prefix), "%s\\fol",
+                   temporary) > 0);
+    CHECK(km_path_complete_utf8(completion_prefix, &completion, &error) ==
+          KM_OK);
+    CHECK(completion != NULL);
+    CHECK(snprintf(completion_prefix, sizeof(completion_prefix), "%s\\folder\\",
+                   temporary) > 0);
+    CHECK(strcmp(completion, completion_prefix) == 0);
+    free(completion);
     CHECK(km_path_from_utf8(path, &opaque, &error) == KM_OK);
     CHECK(km_file_load(opaque, &file, &text, &len, &error) == KM_OK);
     CHECK(snprintf(alias_path, sizeof(alias_path), "%s\\.\\file.txt",
@@ -103,6 +124,7 @@ int main(void)
           KM_ERR_UNSUPPORTED);
     CHECK(DeleteFileA(hard_link));
     CHECK(DeleteFileA(path));
+    CHECK(RemoveDirectoryA(folder));
     CHECK(RemoveDirectoryA(temporary));
     puts("file tests passed");
     return 0;
@@ -209,6 +231,12 @@ int main(void)
     char link_path[512];
     char cr_path[512];
     char alias_path[512];
+    char completion_dir[512];
+    char unicode_dir[512];
+    char invalid_dir[512];
+    char completion_path[512];
+    char invalid_path[512];
+    char *completion = NULL;
     uint8_t disk[64];
     KmBuffer *buffer;
     KmBuffer *alias_buffer;
@@ -220,6 +248,59 @@ int main(void)
     size_t len = 0;
 
     CHECK(mkdtemp(directory) != NULL);
+    path_join(completion_dir, sizeof(completion_dir), directory, "complete");
+    path_join(unicode_dir, sizeof(unicode_dir), directory, "unicode");
+    path_join(invalid_dir, sizeof(invalid_dir), directory, "invalid-name");
+    CHECK(mkdir(completion_dir, 0700) == 0);
+    CHECK(mkdir(unicode_dir, 0700) == 0);
+    CHECK(mkdir(invalid_dir, 0700) == 0);
+    path_join(completion_path, sizeof(completion_path), completion_dir,
+              "alpha.txt");
+    write_bytes(completion_path, (const uint8_t *)"", 0);
+    path_join(completion_path, sizeof(completion_path), completion_dir,
+              "alpine.txt");
+    write_bytes(completion_path, (const uint8_t *)"", 0);
+    path_join(completion_path, sizeof(completion_path), completion_dir,
+              "folder");
+    CHECK(mkdir(completion_path, 0700) == 0);
+    CHECK(snprintf(path, sizeof(path), "%s/al", completion_dir) > 0);
+    CHECK(km_path_complete_utf8(path, &completion, &error) == KM_OK);
+    CHECK(completion != NULL);
+    CHECK(snprintf(path, sizeof(path), "%s/alp", completion_dir) > 0);
+    CHECK(strcmp(completion, path) == 0);
+    free(completion);
+    completion = NULL;
+    CHECK(snprintf(path, sizeof(path), "%s/fol", completion_dir) > 0);
+    CHECK(km_path_complete_utf8(path, &completion, &error) == KM_OK);
+    CHECK(snprintf(path, sizeof(path), "%s/folder/", completion_dir) > 0);
+    CHECK(completion != NULL && strcmp(completion, path) == 0);
+    free(completion);
+    completion = NULL;
+    CHECK(snprintf(completion_path, sizeof(completion_path),
+                   "%s/\xc3\xa9.txt", unicode_dir) > 0);
+    write_bytes(completion_path, (const uint8_t *)"", 0);
+    CHECK(snprintf(completion_path, sizeof(completion_path),
+                   "%s/\xc3\xaa.txt", unicode_dir) > 0);
+    write_bytes(completion_path, (const uint8_t *)"", 0);
+    CHECK(snprintf(path, sizeof(path), "%s/", unicode_dir) > 0);
+    CHECK(km_path_complete_utf8(path, &completion, &error) == KM_OK);
+    CHECK(completion != NULL && strcmp(completion, path) == 0);
+    free(completion);
+    completion = NULL;
+    CHECK(snprintf(invalid_path, sizeof(invalid_path), "%s/", invalid_dir) > 0);
+    {
+        size_t invalid_len = strlen(invalid_path);
+        CHECK(invalid_len + 2 < sizeof(invalid_path));
+        invalid_path[invalid_len] = (char)0xff;
+        invalid_path[invalid_len + 1] = '\0';
+    }
+    write_bytes(invalid_path, (const uint8_t *)"", 0);
+    CHECK(km_path_complete_utf8(invalid_path, &completion, &error) ==
+          KM_ERR_INVALID);
+    CHECK(completion == NULL);
+    CHECK(snprintf(path, sizeof(path), "%s/", invalid_dir) > 0);
+    CHECK(km_path_complete_utf8(path, &completion, &error) == KM_OK);
+    CHECK(completion == NULL);
     path_join(path, sizeof(path), directory, "visited.txt");
     path_join(other, sizeof(other), directory, "replacement.txt");
     path_join(bad, sizeof(bad), directory, "invalid.txt");
@@ -310,6 +391,25 @@ int main(void)
     CHECK(unlink(bad) == 0);
     CHECK(unlink(mixed) == 0);
     CHECK(unlink(cr_path) == 0);
+    CHECK(unlink(invalid_path) == 0);
+    CHECK(rmdir(invalid_dir) == 0);
+    CHECK(snprintf(completion_path, sizeof(completion_path),
+                   "%s/\xc3\xa9.txt", unicode_dir) > 0);
+    CHECK(unlink(completion_path) == 0);
+    CHECK(snprintf(completion_path, sizeof(completion_path),
+                   "%s/\xc3\xaa.txt", unicode_dir) > 0);
+    CHECK(unlink(completion_path) == 0);
+    CHECK(rmdir(unicode_dir) == 0);
+    path_join(completion_path, sizeof(completion_path), completion_dir,
+              "alpha.txt");
+    CHECK(unlink(completion_path) == 0);
+    path_join(completion_path, sizeof(completion_path), completion_dir,
+              "alpine.txt");
+    CHECK(unlink(completion_path) == 0);
+    path_join(completion_path, sizeof(completion_path), completion_dir,
+              "folder");
+    CHECK(rmdir(completion_path) == 0);
+    CHECK(rmdir(completion_dir) == 0);
     path_join(path, sizeof(path), directory, "visited.txt");
     CHECK(unlink(path) == 0);
     CHECK(rmdir(directory) == 0);

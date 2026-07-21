@@ -64,6 +64,63 @@ static size_t find_buffer(const AppBuffers *buffers, const char *name)
     return SIZE_MAX;
 }
 
+static size_t utf8_common_prefix(const char *left, size_t left_len,
+                                 const char *right, size_t right_len)
+{
+    size_t common = left_len < right_len ? left_len : right_len;
+    size_t offset = 0;
+
+    while (offset < common && left[offset] == right[offset]) ++offset;
+    common = offset;
+    while (common != 0 && common < left_len &&
+           ((unsigned char)left[common] & 0xc0u) == 0x80u) {
+        --common;
+    }
+    return common;
+}
+
+static KmStatus complete_buffer_name(const AppBuffers *buffers,
+                                     KmCommandLoop *loop, const char *prefix,
+                                     KmError *error)
+{
+    size_t prefix_len = strlen(prefix);
+    const char *first = NULL;
+    size_t first_len = 0;
+    size_t common_len = 0;
+    size_t matches = 0;
+    size_t i;
+    char *completion;
+    KmStatus status;
+
+    for (i = 0; i < buffers->count; ++i) {
+        const char *candidate = km_buffer_name(buffers->items[i].buffer);
+        size_t candidate_len = strlen(candidate);
+        if (candidate_len < prefix_len ||
+            (prefix_len != 0 &&
+             memcmp(candidate, prefix, prefix_len) != 0)) {
+            continue;
+        }
+        if (matches == 0) {
+            first = candidate;
+            first_len = candidate_len;
+            common_len = candidate_len;
+        } else {
+            size_t candidate_common = utf8_common_prefix(
+                first, first_len, candidate, candidate_len);
+            if (candidate_common < common_len) common_len = candidate_common;
+        }
+        ++matches;
+    }
+    if (matches == 0 || common_len == prefix_len) return KM_OK;
+    completion = (char *)malloc(common_len + 1);
+    if (completion == NULL) return app_fail(error, KM_ERR_OOM, "complete buffer");
+    memcpy(completion, first, common_len);
+    completion[common_len] = '\0';
+    status = km_command_loop_set_prompt_text(loop, completion, error);
+    free(completion);
+    return status;
+}
+
 static size_t find_file_buffer(const AppBuffers *buffers,
                                const KmBuffer *buffer)
 {
@@ -435,6 +492,30 @@ int main(int argc, char **argv)
             if (status == KM_OK) {
                 (void)snprintf(message, sizeof(message), "Killed");
             } else {
+                set_core_error(message, sizeof(message), &core_error);
+            }
+            break;
+        }
+        case KM_COMMAND_REQUEST_COMPLETE_FILE: {
+            const char *prefix = km_command_loop_request_text(loop);
+            char *completion = NULL;
+            km_command_loop_clear_request(loop);
+            status = km_path_complete_utf8(prefix, &completion, &core_error);
+            if (status == KM_OK && completion != NULL) {
+                status = km_command_loop_set_prompt_text(loop, completion,
+                                                         &core_error);
+            }
+            free(completion);
+            if (status != KM_OK) {
+                set_core_error(message, sizeof(message), &core_error);
+            }
+            break;
+        }
+        case KM_COMMAND_REQUEST_COMPLETE_BUFFER: {
+            const char *prefix = km_command_loop_request_text(loop);
+            km_command_loop_clear_request(loop);
+            status = complete_buffer_name(&buffers, loop, prefix, &core_error);
+            if (status != KM_OK) {
                 set_core_error(message, sizeof(message), &core_error);
             }
             break;

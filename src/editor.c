@@ -1653,6 +1653,27 @@ static bool valid_prompt_text(const uint8_t *text, size_t len)
     return true;
 }
 
+static KmStatus replace_prompt_text(KmCommandLoop *loop, const char *text,
+                                    KmError *error)
+{
+    size_t len;
+    uint8_t *replacement;
+
+    if (text == NULL) return fail(error, KM_ERR_INVALID, "minibuffer text");
+    len = strlen(text);
+    if (!valid_prompt_text((const uint8_t *)text, len) || len == SIZE_MAX) {
+        return fail(error, KM_ERR_INVALID, "minibuffer text");
+    }
+    replacement = (uint8_t *)malloc(len + 1);
+    if (replacement == NULL) return fail(error, KM_ERR_OOM, "minibuffer text");
+    memcpy(replacement, text, len + 1);
+    free(loop->prompt_text);
+    loop->prompt_text = replacement;
+    loop->prompt_len = len;
+    loop->prompt_cap = len + 1;
+    return KM_OK;
+}
+
 static KmStatus append_prompt_text(KmCommandLoop *loop, const uint8_t *text,
                                    size_t len, KmError *error)
 {
@@ -1730,6 +1751,74 @@ static bool prompt_is(const KmCommandLoop *loop, const char *name)
            memcmp(loop->prompt_text, name, len) == 0;
 }
 
+static size_t common_ascii_prefix(const char *left, const char *right)
+{
+    size_t length = 0;
+    while (left[length] != '\0' && right[length] != '\0' &&
+           left[length] == right[length]) {
+        ++length;
+    }
+    return length;
+}
+
+static void consider_command_completion(const KmCommandLoop *loop,
+                                        const char *candidate,
+                                        const char **first,
+                                        size_t *common_len,
+                                        size_t *matches)
+{
+    size_t candidate_len = strlen(candidate);
+    if (candidate_len < loop->prompt_len ||
+        (loop->prompt_len != 0 &&
+         memcmp(candidate, loop->prompt_text, loop->prompt_len) != 0)) {
+        return;
+    }
+    if (*matches == 0) {
+        *first = candidate;
+        *common_len = strlen(candidate);
+    } else {
+        size_t candidate_common = common_ascii_prefix(*first, candidate);
+        if (candidate_common < *common_len) *common_len = candidate_common;
+    }
+    ++*matches;
+}
+
+static KmStatus complete_command(KmCommandLoop *loop, KmError *error)
+{
+    static const char *const application_commands[] = {
+        "find-file",
+        "switch-to-buffer",
+        "kill-buffer",
+        "save-buffer",
+        "save-buffers-kill-terminal",
+        "isearch-forward",
+    };
+    const char *first = NULL;
+    size_t common_len = 0;
+    size_t matches = 0;
+    size_t i;
+    char *completion;
+    KmStatus status;
+
+    for (i = 0; i < sizeof(command_registry) / sizeof(command_registry[0]); ++i) {
+        consider_command_completion(loop, command_registry[i].name, &first,
+                                    &common_len, &matches);
+    }
+    for (i = 0; i < sizeof(application_commands) /
+                        sizeof(application_commands[0]); ++i) {
+        consider_command_completion(loop, application_commands[i], &first,
+                                    &common_len, &matches);
+    }
+    if (matches == 0 || common_len == loop->prompt_len) return KM_OK;
+    completion = (char *)malloc(common_len + 1);
+    if (completion == NULL) return fail(error, KM_ERR_OOM, "complete command");
+    memcpy(completion, first, common_len);
+    completion[common_len] = '\0';
+    status = replace_prompt_text(loop, completion, error);
+    free(completion);
+    return status;
+}
+
 static KmStatus execute_named_command(KmCommandLoop *loop, KmView *view,
                                       KmError *error)
 {
@@ -1803,6 +1892,16 @@ static KmStatus dispatch_prompt(KmCommandLoop *loop, KmView *view,
     if (event->kind == KM_EVENT_KEY && event->codepoint == 0x7f &&
         event->modifiers == 0) {
         prompt_backspace(loop);
+        return KM_OK;
+    }
+    if (event->kind == KM_EVENT_KEY && event->codepoint == KM_KEY_TAB &&
+        event->modifiers == 0) {
+        if (loop->prompt_kind == KM_PROMPT_COMMAND) {
+            return complete_command(loop, error);
+        }
+        loop->request = loop->prompt_kind == KM_PROMPT_FIND_FILE
+                            ? KM_COMMAND_REQUEST_COMPLETE_FILE
+                            : KM_COMMAND_REQUEST_COMPLETE_BUFFER;
         return KM_OK;
     }
     if (event->kind == KM_EVENT_TEXT && event->text == NULL &&
@@ -2181,6 +2280,18 @@ const char *km_command_loop_request_text(const KmCommandLoop *loop)
 void km_command_loop_clear_request(KmCommandLoop *loop)
 {
     if (loop != NULL) loop->request = KM_COMMAND_REQUEST_NONE;
+}
+
+KmStatus km_command_loop_set_prompt_text(KmCommandLoop *loop,
+                                         const char *text, KmError *error)
+{
+    km_error_clear(error);
+    if (loop == NULL || loop->prompt_kind == KM_PROMPT_NONE ||
+        loop->prompt_kind == KM_PROMPT_CONFIRM_KILL ||
+        loop->prompt_kind == KM_PROMPT_CONFIRM_EXIT) {
+        return fail(error, KM_ERR_INVALID, "set minibuffer text");
+    }
+    return replace_prompt_text(loop, text, error);
 }
 
 KmStatus km_command_loop_confirm_exit(KmCommandLoop *loop, KmError *error)

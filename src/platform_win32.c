@@ -393,6 +393,10 @@ static void finish_key(KmEvent *event, uint32_t codepoint,
         event->kind = KM_EVENT_KEY;
         event->codepoint = 0x7f;
         event->modifiers = modifiers & (KM_MOD_CTRL | KM_MOD_ALT);
+    } else if (codepoint == '\t') {
+        event->kind = KM_EVENT_KEY;
+        event->codepoint = KM_KEY_TAB;
+        event->modifiers = modifiers;
     } else if (codepoint == '\r' || codepoint == '\n') {
         event->kind = KM_EVENT_TEXT;
         event->codepoint = '\n';
@@ -600,6 +604,7 @@ static uint32_t named_console_key(WORD virtual_key)
     case VK_DOWN: return KM_KEY_DOWN;
     case VK_HOME: return KM_KEY_HOME;
     case VK_END: return KM_KEY_END;
+    case VK_TAB: return KM_KEY_TAB;
     case VK_DELETE: return KM_KEY_DELETE;
     default: return 0;
     }

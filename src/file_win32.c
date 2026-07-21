@@ -219,6 +219,9 @@ KmStatus km_path_from_utf8(const char *path, KmPath **out_path, KmError *error)
     if (wide_len <= 0) {
         return fail(error, KM_ERR_INVALID, "file path", GetLastError());
     }
+    if ((size_t)wide_len > SIZE_MAX / sizeof(WCHAR) - 1) {
+        return fail(error, KM_ERR_INVALID, "file path", 0);
+    }
     wide = (WCHAR *)malloc(((size_t)wide_len + 1) * sizeof(WCHAR));
     if (wide == NULL) return fail(error, KM_ERR_OOM, "file path", 0);
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, (int)len,
@@ -230,6 +233,218 @@ KmStatus km_path_from_utf8(const char *path, KmPath **out_path, KmError *error)
     wide[wide_len] = L'\0';
     status = path_from_wide(wide, out_path, error);
     free(wide);
+    return status;
+}
+
+static size_t wide_common_prefix(const WCHAR *left, size_t left_len,
+                                 const WCHAR *right, size_t right_len)
+{
+    size_t common = left_len < right_len ? left_len : right_len;
+    size_t offset = 0;
+
+    while (offset < common &&
+           CompareStringOrdinal(left + offset, 1, right + offset, 1, TRUE) ==
+               CSTR_EQUAL) {
+        ++offset;
+    }
+    if (offset != 0 && left[offset - 1] >= 0xd800 &&
+        left[offset - 1] <= 0xdbff) {
+        --offset;
+    }
+    return offset;
+}
+
+static bool valid_wide_completion_name(const WCHAR *name, size_t len)
+{
+    size_t i;
+    if (len == 0 || len > (size_t)INT_MAX) return false;
+    for (i = 0; i < len; ++i) {
+        if (name[i] < 0x20 || name[i] == 0x7f) return false;
+    }
+    return WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name, (int)len,
+                               NULL, 0, NULL, NULL) > 0;
+}
+
+KmStatus km_path_complete_utf8(const char *prefix, char **out_completion,
+                               KmError *error)
+{
+    KmPath *typed = NULL;
+    const WCHAR empty[] = L"";
+    const WCHAR *wide;
+    const WCHAR *backslash;
+    const WCHAR *slash;
+    const WCHAR *separator;
+    const WCHAR *name_prefix;
+    size_t wide_len;
+    size_t head_len;
+    size_t prefix_len;
+    WCHAR *pattern = NULL;
+    WCHAR *common = NULL;
+    size_t common_len = 0;
+    size_t matches = 0;
+    bool only_is_directory = false;
+    WIN32_FIND_DATAW found;
+    HANDLE search = INVALID_HANDLE_VALUE;
+    KmStatus status = KM_OK;
+
+    km_error_clear(error);
+    if (prefix == NULL || out_completion == NULL) {
+        return fail(error, KM_ERR_INVALID, "complete file path", 0);
+    }
+    *out_completion = NULL;
+    if (prefix[0] == '\0') {
+        wide = empty;
+    } else {
+        status = km_path_from_utf8(prefix, &typed, error);
+        if (status != KM_OK) return status;
+        wide = typed->wide;
+    }
+    wide_len = wcslen(wide);
+    backslash = wcsrchr(wide, L'\\');
+    slash = wcsrchr(wide, L'/');
+    separator = backslash == NULL ||
+                            (slash != NULL && slash > backslash)
+                        ? slash
+                        : backslash;
+    head_len = separator == NULL ? 0 : (size_t)(separator - wide) + 1;
+    if (head_len == 0 && wide_len >= 2 && wide[1] == L':') head_len = 2;
+    name_prefix = wide + head_len;
+    prefix_len = wide_len - head_len;
+    if (head_len > SIZE_MAX / sizeof(WCHAR) - 2) {
+        status = fail(error, KM_ERR_OOM, "complete file path", 0);
+        goto done;
+    }
+    pattern = (WCHAR *)malloc((head_len + 2) * sizeof(WCHAR));
+    if (pattern == NULL) {
+        status = fail(error, KM_ERR_OOM, "complete file path", 0);
+        goto done;
+    }
+    if (head_len != 0) memcpy(pattern, wide, head_len * sizeof(WCHAR));
+    pattern[head_len] = L'*';
+    pattern[head_len + 1] = L'\0';
+    search = FindFirstFileW(pattern, &found);
+    if (search == INVALID_HANDLE_VALUE) {
+        DWORD code = GetLastError();
+        if (code != ERROR_FILE_NOT_FOUND && code != ERROR_PATH_NOT_FOUND) {
+            status = fail(error, KM_ERR_IO, "complete file path", code);
+        }
+        goto done;
+    }
+    for (;;) {
+        size_t name_len = wcslen(found.cFileName);
+        if (wcscmp(found.cFileName, L".") != 0 &&
+            wcscmp(found.cFileName, L"..") != 0 &&
+            valid_wide_completion_name(found.cFileName, name_len) &&
+            name_len >= prefix_len && prefix_len <= (size_t)INT_MAX &&
+            (prefix_len == 0 ||
+             CompareStringOrdinal(found.cFileName, (int)prefix_len,
+                                  name_prefix, (int)prefix_len, TRUE) ==
+                 CSTR_EQUAL)) {
+            if (matches == 0) {
+                if (name_len > SIZE_MAX / sizeof(WCHAR) - 1) {
+                    status = fail(error, KM_ERR_OOM, "complete file path", 0);
+                    break;
+                }
+                common = (WCHAR *)malloc((name_len + 1) * sizeof(WCHAR));
+                if (common == NULL) {
+                    status = fail(error, KM_ERR_OOM, "complete file path", 0);
+                    break;
+                }
+                memcpy(common, found.cFileName,
+                       (name_len + 1) * sizeof(WCHAR));
+                common_len = name_len;
+                only_is_directory =
+                    (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            } else {
+                common_len = wide_common_prefix(common, common_len,
+                                                found.cFileName, name_len);
+                only_is_directory = false;
+            }
+            ++matches;
+        }
+        if (!FindNextFileW(search, &found)) {
+            DWORD code = GetLastError();
+            if (code != ERROR_NO_MORE_FILES) {
+                status = fail(error, KM_ERR_IO, "complete file path", code);
+            }
+            break;
+        }
+    }
+    if (status == KM_OK && matches != 0) {
+        size_t suffix = only_is_directory ? 1 : 0;
+        size_t completed_len;
+        WCHAR *completed;
+        int utf8_len;
+        if (head_len > SIZE_MAX - common_len - suffix ||
+            head_len + common_len + suffix > (size_t)INT_MAX ||
+            head_len + common_len + suffix >
+                SIZE_MAX / sizeof(WCHAR) - 1) {
+            status = fail(error, KM_ERR_OOM, "complete file path", 0);
+            goto done;
+        }
+        completed_len = head_len + common_len + suffix;
+        completed = (WCHAR *)malloc((completed_len + 1) * sizeof(WCHAR));
+        if (completed == NULL) {
+            status = fail(error, KM_ERR_OOM, "complete file path", 0);
+            goto done;
+        }
+        if (head_len != 0) memcpy(completed, wide, head_len * sizeof(WCHAR));
+        memcpy(completed + head_len, common, common_len * sizeof(WCHAR));
+        if (suffix != 0) {
+            completed[head_len + common_len] =
+                separator != NULL && *separator == L'/' ? L'/' : L'\\';
+        }
+        completed[completed_len] = L'\0';
+        if (completed_len == 0) {
+            *out_completion = (char *)malloc(1);
+            if (*out_completion == NULL) {
+                status = fail(error, KM_ERR_OOM, "complete file path", 0);
+            } else {
+                (*out_completion)[0] = '\0';
+            }
+            free(completed);
+            goto done;
+        }
+        utf8_len = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                       completed, (int)completed_len,
+                                       NULL, 0, NULL, NULL);
+        if (utf8_len <= 0) {
+            status = fail(error, KM_ERR_INVALID, "complete file path",
+                          GetLastError());
+            free(completed);
+            goto done;
+        }
+        *out_completion = (char *)malloc((size_t)utf8_len + 1);
+        if (*out_completion == NULL) {
+            status = fail(error, KM_ERR_OOM, "complete file path", 0);
+            free(completed);
+            goto done;
+        }
+        if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                completed, (int)completed_len,
+                                *out_completion, utf8_len, NULL, NULL) !=
+            utf8_len) {
+            status = fail(error, KM_ERR_INVALID, "complete file path",
+                          GetLastError());
+            free(completed);
+            goto done;
+        }
+        (*out_completion)[utf8_len] = '\0';
+        free(completed);
+    }
+
+done:
+    if (search != INVALID_HANDLE_VALUE && !FindClose(search) &&
+        status == KM_OK) {
+        status = fail(error, KM_ERR_IO, "complete file path", GetLastError());
+    }
+    if (status != KM_OK) {
+        free(*out_completion);
+        *out_completion = NULL;
+    }
+    free(common);
+    free(pattern);
+    km_path_destroy(typed);
     return status;
 }
 

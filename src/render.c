@@ -135,7 +135,7 @@ KmStatus km_cell_grid_put(KmCellGrid *grid, size_t row, size_t column,
     KmStatus status;
 
     if (grid == NULL || glyph == NULL || glyph_len == 0 || (width != 1 && width != 2) ||
-        style_id > KM_STYLE_REGION || row >= grid->rows ||
+        style_id > KM_STYLE_MODELINE || row >= grid->rows ||
         column >= grid->columns || width > grid->columns - column) {
         return fail(error, KM_ERR_INVALID, "write CellGrid cell");
     }
@@ -299,9 +299,14 @@ static KmStatus select_style(char **bytes, size_t *length, size_t *capacity,
     KmStatus status;
 
     if (*current == wanted) return KM_OK;
-    status = wanted == KM_STYLE_REGION
-                 ? append_bytes(bytes, length, capacity, "\x1b[7m", 4, error)
-                 : append_bytes(bytes, length, capacity, "\x1b[27m", 5, error);
+    if (wanted == KM_STYLE_REGION) {
+        status = append_bytes(bytes, length, capacity, "\x1b[0;7m", 6, error);
+    } else if (wanted == KM_STYLE_MODELINE) {
+        status = append_bytes(bytes, length, capacity, "\x1b[0;1;7m", 8,
+                              error);
+    } else {
+        status = append_bytes(bytes, length, capacity, "\x1b[0m", 4, error);
+    }
     if (status == KM_OK) *current = wanted;
     return status;
 }
