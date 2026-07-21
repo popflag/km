@@ -1,0 +1,453 @@
+#include "platform.h"
+
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <termios.h>
+#include <unistd.h>
+
+struct KmPlatform {
+    int interactive;
+    int raw_enabled;
+    int screen_entered;
+    int installed_signals;
+    int signal_read_fd;
+    int signal_write_fd;
+    struct termios original_termios;
+    struct sigaction original_signals[5];
+    unsigned columns;
+    unsigned rows;
+    uint32_t utf8_value;
+    uint32_t utf8_min;
+    unsigned utf8_needed;
+    unsigned char pending_byte;
+    int pending_byte_valid;
+    int eof_pending;
+};
+
+static volatile sig_atomic_t resize_pending;
+static volatile sig_atomic_t terminate_pending;
+static int interactive_active;
+static volatile sig_atomic_t signal_notify_fd = -1;
+
+static const int managed_signals[] = {
+    SIGWINCH, SIGTERM, SIGHUP, SIGINT, SIGPIPE
+};
+
+static void set_error(char *error, size_t cap, const char *format, ...)
+{
+    va_list args;
+
+    if (error == NULL || cap == 0) {
+        return;
+    }
+    va_start(args, format);
+    (void)vsnprintf(error, cap, format, args);
+    va_end(args);
+}
+
+static void notify_main(unsigned char value)
+{
+    int saved_errno = errno;
+    int descriptor = (int)signal_notify_fd;
+    if (descriptor >= 0) {
+        (void)write(descriptor, &value, 1);
+    }
+    errno = saved_errno;
+}
+
+static void handle_resize(int signal_number)
+{
+    (void)signal_number;
+    resize_pending = 1;
+    notify_main(1);
+}
+
+static void handle_terminate(int signal_number)
+{
+    terminate_pending = signal_number;
+    notify_main(2);
+}
+
+static void update_size(KmPlatform *platform)
+{
+    struct winsize size;
+
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0 &&
+        size.ws_col != 0 && size.ws_row != 0) {
+        platform->columns = size.ws_col;
+        platform->rows = size.ws_row;
+    } else {
+        platform->columns = 80;
+        platform->rows = 24;
+    }
+}
+
+static int write_all(const char *bytes, size_t length,
+                     char *error, size_t error_cap)
+{
+    size_t written = 0;
+
+    while (written < length) {
+        ssize_t count = write(STDOUT_FILENO, bytes + written, length - written);
+        if (count > 0) {
+            written += (size_t)count;
+        } else if (count < 0 && errno == EINTR) {
+            continue;
+        } else {
+            int code = count < 0 ? errno : EIO;
+            set_error(error, error_cap, "write terminal: %s", strerror(code));
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int install_signals(KmPlatform *platform, char *error, size_t error_cap)
+{
+    size_t i;
+
+    for (i = 0; i < sizeof(managed_signals) / sizeof(managed_signals[0]); ++i) {
+        struct sigaction action;
+        memset(&action, 0, sizeof(action));
+        sigemptyset(&action.sa_mask);
+        if (managed_signals[i] == SIGWINCH) {
+            action.sa_handler = handle_resize;
+        } else if (managed_signals[i] == SIGPIPE) {
+            action.sa_handler = SIG_IGN;
+        } else {
+            action.sa_handler = handle_terminate;
+        }
+        if (sigaction(managed_signals[i], &action,
+                      &platform->original_signals[i]) != 0) {
+            set_error(error, error_cap, "install signal handler: %s",
+                      strerror(errno));
+            return -1;
+        }
+        platform->installed_signals = (int)i + 1;
+    }
+    return 0;
+}
+
+static int open_signal_pipe(KmPlatform *platform, char *error, size_t error_cap)
+{
+    int descriptors[2];
+    int flags;
+
+    if (pipe(descriptors) != 0) {
+        set_error(error, error_cap, "create signal pipe: %s", strerror(errno));
+        return -1;
+    }
+    platform->signal_read_fd = descriptors[0];
+    platform->signal_write_fd = descriptors[1];
+    flags = fcntl(platform->signal_read_fd, F_GETFL, 0);
+    if (flags < 0 ||
+        fcntl(platform->signal_read_fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        set_error(error, error_cap, "configure signal pipe: %s", strerror(errno));
+        return -1;
+    }
+    flags = fcntl(platform->signal_write_fd, F_GETFL, 0);
+    if (flags < 0 ||
+        fcntl(platform->signal_write_fd, F_SETFL, flags | O_NONBLOCK) != 0 ||
+        fcntl(platform->signal_read_fd, F_SETFD, FD_CLOEXEC) != 0 ||
+        fcntl(platform->signal_write_fd, F_SETFD, FD_CLOEXEC) != 0) {
+        set_error(error, error_cap, "configure signal pipe: %s", strerror(errno));
+        return -1;
+    }
+    signal_notify_fd = platform->signal_write_fd;
+    return 0;
+}
+
+static void restore_signals(KmPlatform *platform)
+{
+    while (platform->installed_signals > 0) {
+        int i = --platform->installed_signals;
+        (void)sigaction(managed_signals[i], &platform->original_signals[i], NULL);
+    }
+}
+
+int km_platform_open(KmPlatform **out, char *error, size_t error_cap)
+{
+    static const char enter_screen[] = "\x1b[?1049h\x1b[?25l";
+    KmPlatform *platform;
+    struct termios raw;
+
+    if (out == NULL) {
+        set_error(error, error_cap, "invalid platform output pointer");
+        return -1;
+    }
+    *out = NULL;
+    platform = (KmPlatform *)calloc(1, sizeof(*platform));
+    if (platform == NULL) {
+        set_error(error, error_cap, "allocate platform: out of memory");
+        return -1;
+    }
+    platform->signal_read_fd = -1;
+    platform->signal_write_fd = -1;
+    platform->interactive = isatty(STDIN_FILENO) && isatty(STDOUT_FILENO);
+    update_size(platform);
+    if (!platform->interactive) {
+        *out = platform;
+        return 0;
+    }
+    if (interactive_active) {
+        set_error(error, error_cap, "an interactive terminal is already active");
+        free(platform);
+        return -1;
+    }
+    if (tcgetattr(STDIN_FILENO, &platform->original_termios) != 0) {
+        set_error(error, error_cap, "read terminal mode: %s", strerror(errno));
+        free(platform);
+        return -1;
+    }
+
+    interactive_active = 1;
+    resize_pending = 0;
+    terminate_pending = 0;
+    if (open_signal_pipe(platform, error, error_cap) != 0 ||
+        install_signals(platform, error, error_cap) != 0) {
+        km_platform_close(platform);
+        return -1;
+    }
+
+    raw = platform->original_termios;
+    raw.c_iflag &= (tcflag_t)~(IGNBRK | BRKINT | PARMRK | ICRNL | INLCR |
+                               IGNCR | INPCK | ISTRIP | IXON);
+    raw.c_oflag &= (tcflag_t)~OPOST;
+    raw.c_cflag &= (tcflag_t)~CSIZE;
+    raw.c_cflag |= CS8;
+    raw.c_lflag &= (tcflag_t)~(ECHO | ICANON | IEXTEN | ISIG);
+    raw.c_cc[VMIN] = 0;
+    raw.c_cc[VTIME] = 0;
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) != 0) {
+        set_error(error, error_cap, "enter raw terminal mode: %s", strerror(errno));
+        km_platform_close(platform);
+        return -1;
+    }
+    platform->raw_enabled = 1;
+    platform->screen_entered = 1;
+    if (write_all(enter_screen, sizeof(enter_screen) - 1,
+                  error, error_cap) != 0) {
+        km_platform_close(platform);
+        return -1;
+    }
+    *out = platform;
+    return 0;
+}
+
+void km_platform_close(KmPlatform *platform)
+{
+    static const char leave_screen[] = "\x1b[?25h\x1b[?1049l";
+    int terminating_signal;
+
+    if (platform == NULL) {
+        return;
+    }
+    terminating_signal = (int)terminate_pending;
+    if (platform->screen_entered) {
+        (void)write_all(leave_screen, sizeof(leave_screen) - 1, NULL, 0);
+    }
+    if (platform->raw_enabled) {
+        (void)tcsetattr(STDIN_FILENO, TCSAFLUSH, &platform->original_termios);
+    }
+    restore_signals(platform);
+    signal_notify_fd = -1;
+    if (platform->signal_read_fd >= 0) close(platform->signal_read_fd);
+    if (platform->signal_write_fd >= 0) close(platform->signal_write_fd);
+    if (platform->interactive) {
+        interactive_active = 0;
+    }
+    free(platform);
+    if (terminating_signal != 0) {
+        (void)raise(terminating_signal);
+    }
+}
+
+int km_platform_is_interactive(const KmPlatform *platform)
+{
+    return platform != NULL && platform->interactive;
+}
+
+int km_platform_draw_probe(KmPlatform *platform, char *error, size_t error_cap)
+{
+    static const char plain_probe[] =
+        "km terminal probe\n"
+        "ASCII: abc XYZ 123\n"
+        "Combining: e\xCC\x81\n"
+        "CJK: \xE6\x96\x87\xE6\x9C\xAC\n";
+    char screen[512];
+    int length;
+
+    if (platform == NULL) {
+        set_error(error, error_cap, "draw probe: platform is null");
+        return -1;
+    }
+    if (!platform->interactive) {
+        return write_all(plain_probe, sizeof(plain_probe) - 1, error, error_cap);
+    }
+    update_size(platform);
+    length = snprintf(screen, sizeof(screen),
+                      "\x1b[2J\x1b[H"
+                      "km terminal probe\r\n"
+                      "size: %ux%u\r\n"
+                      "ASCII: abc XYZ 123\r\n"
+                      "Combining: e\xCC\x81\r\n"
+                      "CJK: \xE6\x96\x87\xE6\x9C\xAC\r\n"
+                      "Press q or C-g to exit",
+                      platform->columns, platform->rows);
+    if (length < 0 || (size_t)length >= sizeof(screen)) {
+        set_error(error, error_cap, "format probe screen: output is too large");
+        return -1;
+    }
+    return write_all(screen, (size_t)length, error, error_cap);
+}
+
+static int decode_key(KmPlatform *platform, unsigned char byte, KmEvent *event)
+{
+    uint32_t codepoint;
+
+    if (platform->utf8_needed == 0) {
+        if (byte < 0x80) {
+            codepoint = byte;
+        } else if (byte >= 0xC2 && byte <= 0xDF) {
+            platform->utf8_value = byte & 0x1Fu;
+            platform->utf8_min = 0x80;
+            platform->utf8_needed = 1;
+            return 0;
+        } else if (byte >= 0xE0 && byte <= 0xEF) {
+            platform->utf8_value = byte & 0x0Fu;
+            platform->utf8_min = 0x800;
+            platform->utf8_needed = 2;
+            return 0;
+        } else if (byte >= 0xF0 && byte <= 0xF4) {
+            platform->utf8_value = byte & 0x07u;
+            platform->utf8_min = 0x10000;
+            platform->utf8_needed = 3;
+            return 0;
+        } else {
+            codepoint = 0xFFFD;
+        }
+    } else if ((byte & 0xC0u) == 0x80u) {
+        platform->utf8_value = (platform->utf8_value << 6) | (byte & 0x3Fu);
+        if (--platform->utf8_needed != 0) {
+            return 0;
+        }
+        codepoint = platform->utf8_value;
+        if (codepoint < platform->utf8_min || codepoint > 0x10FFFF ||
+            (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
+            codepoint = 0xFFFD;
+        }
+    } else {
+        platform->utf8_needed = 0;
+        platform->pending_byte = byte;
+        platform->pending_byte_valid = 1;
+        codepoint = 0xFFFD;
+    }
+
+    memset(event, 0, sizeof(*event));
+    event->kind = KM_EVENT_KEY;
+    event->repeat = 1;
+    if (codepoint >= 1 && codepoint <= 26) {
+        event->codepoint = (uint32_t)('a' + codepoint - 1);
+        event->modifiers = KM_MOD_CTRL;
+    } else {
+        event->codepoint = codepoint;
+    }
+    return 1;
+}
+
+int km_platform_read_event(KmPlatform *platform, KmEvent *event,
+                           char *error, size_t error_cap)
+{
+    if (platform == NULL || event == NULL) {
+        set_error(error, error_cap, "read event: invalid argument");
+        return -1;
+    }
+    for (;;) {
+        unsigned char byte;
+        ssize_t count;
+
+        if (terminate_pending) {
+            memset(event, 0, sizeof(*event));
+            event->kind = KM_EVENT_EOF;
+            return 0;
+        }
+        if (platform->interactive && resize_pending) {
+            resize_pending = 0;
+            update_size(platform);
+            memset(event, 0, sizeof(*event));
+            event->kind = KM_EVENT_RESIZE;
+            event->columns = platform->columns;
+            event->rows = platform->rows;
+            return 0;
+        }
+        if (platform->pending_byte_valid) {
+            byte = platform->pending_byte;
+            platform->pending_byte_valid = 0;
+            if (decode_key(platform, byte, event)) return 0;
+            continue;
+        }
+        if (platform->eof_pending) {
+            platform->eof_pending = 0;
+            memset(event, 0, sizeof(*event));
+            event->kind = KM_EVENT_EOF;
+            return 0;
+        }
+        if (platform->interactive) {
+            struct pollfd descriptors[2];
+            int ready;
+            descriptors[0].fd = STDIN_FILENO;
+            descriptors[0].events = POLLIN;
+            descriptors[0].revents = 0;
+            descriptors[1].fd = platform->signal_read_fd;
+            descriptors[1].events = POLLIN;
+            descriptors[1].revents = 0;
+            ready = poll(descriptors, 2, -1);
+            if (ready < 0 && errno == EINTR) {
+                continue;
+            }
+            if (ready < 0) {
+                set_error(error, error_cap, "poll terminal: %s", strerror(errno));
+                return -1;
+            }
+            if ((descriptors[1].revents & POLLIN) != 0) {
+                unsigned char discard[64];
+                while (read(platform->signal_read_fd, discard,
+                            sizeof(discard)) > 0) {
+                }
+                continue;
+            }
+        }
+        count = read(STDIN_FILENO, &byte, 1);
+        if (count < 0 && errno == EINTR) {
+            continue;
+        }
+        if (count < 0) {
+            set_error(error, error_cap, "read terminal: %s", strerror(errno));
+            return -1;
+        }
+        if (count == 0) {
+            if (platform->utf8_needed != 0) {
+                platform->utf8_needed = 0;
+                platform->eof_pending = 1;
+                memset(event, 0, sizeof(*event));
+                event->kind = KM_EVENT_KEY;
+                event->codepoint = 0xFFFD;
+                event->repeat = 1;
+                return 0;
+            }
+            memset(event, 0, sizeof(*event));
+            event->kind = KM_EVENT_EOF;
+            return 0;
+        }
+        if (decode_key(platform, byte, event)) {
+            return 0;
+        }
+    }
+}

@@ -1,6 +1,6 @@
 # 类 GNU Emacs 文本编辑器架构调研记录
 
-> 状态：架构基线，尚未进入实现
+> 状态：架构基线，Phase 0/1 开始实现
 > 调研日期：2026-07-20（UTC-08:00）
 > 目标语言：C17。原需求中的“C20”不是 ISO C 标准版本；若实际指 C++20，需要重新评估本文的类型、构建和插件 ABI 结论。
 > 决策标记：`采用`、`拒绝`、`待验证`、`未来`。
@@ -98,7 +98,7 @@ Base buffer narrow 到 `[2,5)` 后，其 indirect buffer 仍观察到完整范�
 
 | 编号 | 状态   | 决策                                                            |
 |------|--------|-----------------------------------------------------------------|
-| A01  | 采用   | C17、64 位平台优先，CMake 构建，GCC/Clang/MSVC                  |
+| A01  | 采用   | C17、64 位平台优先，`nob.h` 构建，GCC/Clang/MSVC                |
 | A02  | 采用   | 固定 Emacs 版本和命令矩阵上的行为兼容                           |
 | A03  | 采用   | `Document -> Buffer -> View` 三层所有权                         |
 | A04  | 采用   | Document 内部使用 UTF-8 byte gap buffer                         |
@@ -118,6 +118,7 @@ Base buffer narrow 到 `[2,5)` 后，其 indirect buffer 仍观察到完整范�
 | A18  | 待验证 | rectangle 在 tab、组合字符和宽 EGC 边缘的逐命令 Emacs 语义      |
 | A19  | 待验证 | GNU Emacs `undo`、`undo-only`、`undo-redo` 的精确遍历与合并行为 |
 | A20  | 待验证 | Windows VT input 下 bracketed paste、鼠标、resize 和修饰键组合  |
+| A21  | 采用   | QEmacs 作为大文件/mode/TTY 参考，不改变首版 gap/transaction/CellGrid；详见 [QEmacs 专项调研](qemacs-architecture-research.md) |
 
 ## 4. 总体架构
 
@@ -887,7 +888,8 @@ typedef struct {
 首版不为每个逻辑模块创建一个 library。建议保持两个生产 target：可 headless 测试的 `km_core` 和最终可执行文件 `km`。
 
 ```text
-CMakeLists.txt
+nob.c
+nob.h
 src/
   base.c/.h
   document.c/.h       gap, anchors, transaction, undo, file metadata
@@ -915,14 +917,29 @@ tests/
 
 这只是起始布局。某个文件明显变大后再拆分，不提前为每个 struct 创建目录和 target。
 
-CMake 要求：
+`nob.h` 构建要求：
 
-- `target_compile_features(km_core PUBLIC c_std_17)`。
-- 通过 target 设置 include、defines、warnings，不修改全局 `CMAKE_C_FLAGS`。
-- CMake 只选择一个 platform `.c`；核心不得散布 `_WIN32`。
-- `utf8proc` 是独立 target，固定 tag/源码 hash。
-- GCC/Clang 启用严格 warnings；MSVC 使用对应 `/W4`，第三方不继承 warnings-as-errors。
-- Debug CI 使用 ASan/UBSan；Windows 使用 MSVC 和原生测试。
+- 只依赖可用的 C 编译器即可 bootstrap `nob.c`；构建程序支持 GCC、Clang 和 MSVC。
+- 构建程序按 target 组装 include、defines 和 warnings，不依赖全局环境 flags。
+- 构建程序只选择一个 platform `.c`；核心不得散布 `_WIN32`。
+- `utf8proc v2.11.3` 作为 vendored 第三方源码单独编译，项目的 warnings-as-errors 不施加到第三方源码。
+- GCC/Clang 启用严格 warnings；MSVC 使用对应 `/W4`。
+- `test` 目标运行 headless tests；Debug sanitizer 由明确的构建选项启用。
+
+当前 bootstrap 与验证入口为：
+
+```text
+cc -std=c17 nob.c -o nob
+./nob build
+./nob test
+./nob sanitize
+./nob clean
+```
+
+`clean` 只能删除 `build/`，并且不得跟随 POSIX symlink 或 Windows reparse
+point。构建程序自重建时必须保留 bootstrap 所用编译器和 C17 模式；切换
+编译器或 sanitizer 配置时必须使第三方对象与最终目标失效，不能跨 ABI
+复用缓存。
 
 ## 19. 测试与验证
 
@@ -988,7 +1005,7 @@ rectangle-mark-mode and C-x r commands
 ### Phase 0：契约与双平台探针
 
 - 冻结 C17、目标 Emacs 版本、Windows 最低环境和 Unicode 版本。
-- CMake 在 GCC/Clang/MSVC 构建。
+- `nob.h` 构建程序在 GCC/Clang/MSVC bootstrap 并构建项目。
 - POSIX 与 Windows 都完成：进入终端、读一个事件、画 CellGrid、resize、恢复退出。
 - Vendoring `utf8proc v2.11.3` 并运行版本检查。
 
@@ -1047,6 +1064,8 @@ rectangle-mark-mode and C-x r commands
 - 后台任务和 file watcher。
 - Windows VT input profile。
 
+QEmacs 专项调研给出的升级指标包括：大文件 load time/RSS、`gap_bytes_moved / inserted_bytes`、splice p95/p99、transaction K 和 live anchor M。没有这些数据时，不用 QEmacs page array 替换 gap。
+
 ### Phase 7：插件
 
 至少等 command、Document iterator 和 transaction API 经历一个稳定版本。先做随主程序源码重编译的内置模块，再决定是否冻结动态 ABI。
@@ -1097,6 +1116,13 @@ rectangle-mark-mode and C-x r commands
 - [GNU Emacs Lisp Manual: Command Loop](https://www.gnu.org/software/emacs/manual/html_node/elisp/Command-Loop-Overview.html)
 - [GNU Emacs Manual: Arguments](https://www.gnu.org/software/emacs/manual/html_node/emacs/Arguments.html)
 
+### QEmacs
+
+- [QEmacs 架构专项调研](qemacs-architecture-research.md)
+- [QEmacs 6.5.2 固定源码提交](https://github.com/qemacs/qemacs/tree/b1f189c924c36c8074b54042f70e53eb785e3010)
+- [QEmacs `Page` / `EditBuffer`](https://github.com/qemacs/qemacs/blob/b1f189c924c36c8074b54042f70e53eb785e3010/qe.h#L303-L488)
+- [QEmacs TTY row diff](https://github.com/qemacs/qemacs/blob/b1f189c924c36c8074b54042f70e53eb785e3010/tty.c#L1646-L1725)
+
 ### Unicode
 
 - [UAX #29: Unicode Text Segmentation](https://www.unicode.org/reports/tr29/)
@@ -1124,7 +1150,7 @@ rectangle-mark-mode and C-x r commands
 - [POSIX `fsync`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/fsync.html)
 - [Microsoft `ReplaceFileW`](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew)
 - [Microsoft `FlushFileBuffers`](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-flushfilebuffers)
-- [CMake Buildsystem Manual](https://cmake.org/cmake/help/latest/manual/cmake-buildsystem.7.html)
+- [`nob.h`](https://github.com/tsoding/nob.h)
 - [Crowley: Data Structures for Text Sequences](https://www.cs.unm.edu/~crowley/papers/sds.pdf)
 - [Boehm, Atkinson, Plass: Ropes, an Alternative to Strings](https://cs.rit.edu/usr/local/pub/jeh/courses/QUARTERS/FP/Labs/CedarRope/rope-paper.pdf)
 - [LLVM libFuzzer](https://llvm.org/docs/LibFuzzer.html)

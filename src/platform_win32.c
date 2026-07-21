@@ -1,0 +1,540 @@
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+
+#include "platform.h"
+
+#include <limits.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct KmPlatform {
+    HANDLE input;
+    HANDLE output;
+    DWORD original_input_mode;
+    DWORD original_output_mode;
+    int input_console;
+    int output_console;
+    int input_mode_changed;
+    int output_mode_changed;
+    int screen_entered;
+    int handler_installed;
+    int interactive;
+    unsigned columns;
+    unsigned rows;
+    WCHAR high_surrogate;
+    uint32_t utf8_value;
+    uint32_t utf8_min;
+    unsigned utf8_needed;
+    unsigned char pending_byte;
+    int pending_byte_valid;
+    int eof_pending;
+};
+
+static volatile LONG interactive_active;
+static HANDLE active_input;
+static HANDLE active_output;
+static DWORD active_input_mode;
+static DWORD active_output_mode;
+static volatile LONG active_input_changed;
+static volatile LONG active_output_changed;
+static volatile LONG active_screen_entered;
+static volatile LONG active_handler_enabled;
+static volatile LONG active_handler_count;
+static SRWLOCK active_console_lock = SRWLOCK_INIT;
+
+static void set_error(char *error, size_t cap, const char *format, ...)
+{
+    va_list args;
+
+    if (error == NULL || cap == 0) {
+        return;
+    }
+    va_start(args, format);
+    (void)vsnprintf(error, cap, format, args);
+    va_end(args);
+}
+
+static void set_windows_error(char *error, size_t cap, const char *operation)
+{
+    set_error(error, cap, "%s: Windows error %lu", operation,
+              (unsigned long)GetLastError());
+}
+
+static BOOL WINAPI handle_console_control(DWORD control_type)
+{
+    static const WCHAR leave_screen[] = L"\x1b[?25h\x1b[?1049l";
+    DWORD written;
+
+    if (control_type != CTRL_C_EVENT && control_type != CTRL_BREAK_EVENT &&
+        control_type != CTRL_CLOSE_EVENT && control_type != CTRL_LOGOFF_EVENT &&
+        control_type != CTRL_SHUTDOWN_EVENT) {
+        return FALSE;
+    }
+    (void)InterlockedIncrement(&active_handler_count);
+    if (InterlockedCompareExchange(&active_handler_enabled, 0, 0) == 0) {
+        (void)InterlockedDecrement(&active_handler_count);
+        return FALSE;
+    }
+    AcquireSRWLockExclusive(&active_console_lock);
+    if (InterlockedCompareExchange(&active_handler_enabled, 0, 0) == 0) {
+        ReleaseSRWLockExclusive(&active_console_lock);
+        (void)InterlockedDecrement(&active_handler_count);
+        return FALSE;
+    }
+    if (InterlockedCompareExchange(&active_screen_entered, 0, 0) != 0) {
+        (void)WriteConsoleW(active_output, leave_screen,
+                            (DWORD)(sizeof(leave_screen) / sizeof(leave_screen[0]) - 1),
+                            &written, NULL);
+    }
+    if (InterlockedCompareExchange(&active_input_changed, 0, 0) != 0) {
+        (void)SetConsoleMode(active_input, active_input_mode);
+    }
+    if (InterlockedCompareExchange(&active_output_changed, 0, 0) != 0) {
+        (void)SetConsoleMode(active_output, active_output_mode);
+    }
+    ReleaseSRWLockExclusive(&active_console_lock);
+    (void)InterlockedDecrement(&active_handler_count);
+    return FALSE;
+}
+
+static void update_size(KmPlatform *platform)
+{
+    CONSOLE_SCREEN_BUFFER_INFO info;
+
+    if (platform->output_console &&
+        GetConsoleScreenBufferInfo(platform->output, &info)) {
+        platform->columns = (unsigned)(info.srWindow.Right - info.srWindow.Left + 1);
+        platform->rows = (unsigned)(info.srWindow.Bottom - info.srWindow.Top + 1);
+    } else {
+        platform->columns = 80;
+        platform->rows = 24;
+    }
+}
+
+static int write_utf8(KmPlatform *platform, const char *bytes, size_t length,
+                      char *error, size_t error_cap)
+{
+    if (!platform->output_console) {
+        size_t total = 0;
+        while (total < length) {
+            DWORD count = (DWORD)((length - total) > MAXDWORD
+                                      ? MAXDWORD
+                                      : (length - total));
+            DWORD written = 0;
+            if (!WriteFile(platform->output, bytes + total, count, &written, NULL)) {
+                set_windows_error(error, error_cap, "write output");
+                return -1;
+            }
+            if (written == 0) {
+                set_error(error, error_cap, "write output: no progress");
+                return -1;
+            }
+            total += written;
+        }
+        return 0;
+    }
+
+    if (length > INT_MAX) {
+        set_error(error, error_cap, "write console: output is too large");
+        return -1;
+    } else {
+        int wide_length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                               bytes, (int)length, NULL, 0);
+        WCHAR *wide;
+        DWORD total = 0;
+        if (wide_length <= 0) {
+            set_windows_error(error, error_cap, "decode UTF-8 output");
+            return -1;
+        }
+        if ((size_t)wide_length > SIZE_MAX / sizeof(*wide)) {
+            set_error(error, error_cap, "write console: output is too large");
+            return -1;
+        }
+        wide = (WCHAR *)malloc((size_t)wide_length * sizeof(*wide));
+        if (wide == NULL) {
+            set_error(error, error_cap, "write console: out of memory");
+            return -1;
+        }
+        if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes, (int)length,
+                                wide, wide_length) != wide_length) {
+            set_windows_error(error, error_cap, "decode UTF-8 output");
+            free(wide);
+            return -1;
+        }
+        while (total < (DWORD)wide_length) {
+            DWORD written = 0;
+            if (!WriteConsoleW(platform->output, wide + total,
+                               (DWORD)wide_length - total, &written, NULL)) {
+                set_windows_error(error, error_cap, "write console");
+                free(wide);
+                return -1;
+            }
+            if (written == 0) {
+                set_error(error, error_cap, "write console: no progress");
+                free(wide);
+                return -1;
+            }
+            total += written;
+        }
+        free(wide);
+    }
+    return 0;
+}
+
+int km_platform_open(KmPlatform **out, char *error, size_t error_cap)
+{
+    static const char enter_screen[] = "\x1b[?1049h\x1b[?25l";
+    KmPlatform *platform;
+    DWORD mode;
+
+    if (out == NULL) {
+        set_error(error, error_cap, "invalid platform output pointer");
+        return -1;
+    }
+    *out = NULL;
+    platform = (KmPlatform *)calloc(1, sizeof(*platform));
+    if (platform == NULL) {
+        set_error(error, error_cap, "allocate platform: out of memory");
+        return -1;
+    }
+    platform->input = GetStdHandle(STD_INPUT_HANDLE);
+    platform->output = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (platform->input == NULL || platform->input == INVALID_HANDLE_VALUE ||
+        platform->output == NULL || platform->output == INVALID_HANDLE_VALUE) {
+        set_windows_error(error, error_cap, "get standard handles");
+        free(platform);
+        return -1;
+    }
+    platform->input_console = GetConsoleMode(platform->input,
+                                              &platform->original_input_mode) != 0;
+    platform->output_console = GetConsoleMode(platform->output,
+                                               &platform->original_output_mode) != 0;
+    platform->interactive = platform->input_console && platform->output_console;
+    update_size(platform);
+    if (!platform->interactive) {
+        *out = platform;
+        return 0;
+    }
+    if (InterlockedCompareExchange(&interactive_active, 1, 0) != 0) {
+        set_error(error, error_cap, "an interactive console is already active");
+        free(platform);
+        return -1;
+    }
+
+    active_input = platform->input;
+    active_output = platform->output;
+    active_input_mode = platform->original_input_mode;
+    active_output_mode = platform->original_output_mode;
+    AcquireSRWLockExclusive(&active_console_lock);
+    (void)InterlockedExchange(&active_handler_enabled, 1);
+    if (!SetConsoleCtrlHandler(handle_console_control, TRUE)) {
+        (void)InterlockedExchange(&active_handler_enabled, 0);
+        ReleaseSRWLockExclusive(&active_console_lock);
+        set_windows_error(error, error_cap, "install console control handler");
+        km_platform_close(platform);
+        return -1;
+    }
+    platform->handler_installed = 1;
+    platform->output_mode_changed = 1;
+    (void)InterlockedExchange(&active_output_changed, 1);
+    mode = platform->original_output_mode |
+           ENABLE_PROCESSED_OUTPUT | ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    if (!SetConsoleMode(platform->output, mode)) {
+        set_windows_error(error, error_cap, "enable VT output");
+        ReleaseSRWLockExclusive(&active_console_lock);
+        km_platform_close(platform);
+        return -1;
+    }
+    platform->input_mode_changed = 1;
+    (void)InterlockedExchange(&active_input_changed, 1);
+    mode = platform->original_input_mode;
+    mode &= ~(ENABLE_PROCESSED_INPUT | ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT);
+    mode |= ENABLE_WINDOW_INPUT;
+    if (!SetConsoleMode(platform->input, mode)) {
+        set_windows_error(error, error_cap, "enter console input mode");
+        ReleaseSRWLockExclusive(&active_console_lock);
+        km_platform_close(platform);
+        return -1;
+    }
+
+    platform->screen_entered = 1;
+    (void)InterlockedExchange(&active_screen_entered, 1);
+    if (write_utf8(platform, enter_screen, sizeof(enter_screen) - 1,
+                   error, error_cap) != 0) {
+        ReleaseSRWLockExclusive(&active_console_lock);
+        km_platform_close(platform);
+        return -1;
+    }
+    ReleaseSRWLockExclusive(&active_console_lock);
+    *out = platform;
+    return 0;
+}
+
+void km_platform_close(KmPlatform *platform)
+{
+    static const char leave_screen[] = "\x1b[?25h\x1b[?1049l";
+
+    if (platform == NULL) {
+        return;
+    }
+    if (platform->interactive) {
+        AcquireSRWLockExclusive(&active_console_lock);
+    }
+    if (platform->screen_entered) {
+        (void)write_utf8(platform, leave_screen, sizeof(leave_screen) - 1, NULL, 0);
+    }
+    (void)InterlockedExchange(&active_screen_entered, 0);
+    if (platform->input_mode_changed) {
+        (void)SetConsoleMode(platform->input, platform->original_input_mode);
+    }
+    if (platform->output_mode_changed) {
+        (void)SetConsoleMode(platform->output, platform->original_output_mode);
+    }
+    (void)InterlockedExchange(&active_input_changed, 0);
+    (void)InterlockedExchange(&active_output_changed, 0);
+    if (platform->interactive) {
+        ReleaseSRWLockExclusive(&active_console_lock);
+    }
+    if (platform->handler_installed) {
+        (void)InterlockedExchange(&active_handler_enabled, 0);
+        (void)SetConsoleCtrlHandler(handle_console_control, FALSE);
+        while (InterlockedCompareExchange(&active_handler_count, 0, 0) != 0) {
+            Sleep(0);
+        }
+        platform->handler_installed = 0;
+    }
+    if (platform->interactive) {
+        (void)InterlockedExchange(&interactive_active, 0);
+    }
+    free(platform);
+}
+
+int km_platform_is_interactive(const KmPlatform *platform)
+{
+    return platform != NULL && platform->interactive;
+}
+
+int km_platform_draw_probe(KmPlatform *platform, char *error, size_t error_cap)
+{
+    static const char plain_probe[] =
+        "km terminal probe\n"
+        "ASCII: abc XYZ 123\n"
+        "Combining: e\xCC\x81\n"
+        "CJK: \xE6\x96\x87\xE6\x9C\xAC\n";
+    char screen[512];
+    int length;
+
+    if (platform == NULL) {
+        set_error(error, error_cap, "draw probe: platform is null");
+        return -1;
+    }
+    if (!platform->interactive) {
+        return write_utf8(platform, plain_probe, sizeof(plain_probe) - 1,
+                          error, error_cap);
+    }
+    update_size(platform);
+    length = snprintf(screen, sizeof(screen),
+                      "\x1b[2J\x1b[H"
+                      "km terminal probe\r\n"
+                      "size: %ux%u\r\n"
+                      "ASCII: abc XYZ 123\r\n"
+                      "Combining: e\xCC\x81\r\n"
+                      "CJK: \xE6\x96\x87\xE6\x9C\xAC\r\n"
+                      "Press q or C-g to exit",
+                      platform->columns, platform->rows);
+    if (length < 0 || (size_t)length >= sizeof(screen)) {
+        set_error(error, error_cap, "format probe screen: output is too large");
+        return -1;
+    }
+    return write_utf8(platform, screen, (size_t)length, error, error_cap);
+}
+
+static void finish_key(KmEvent *event, uint32_t codepoint,
+                       uint32_t modifiers, uint32_t repeat)
+{
+    memset(event, 0, sizeof(*event));
+    event->kind = KM_EVENT_KEY;
+    event->repeat = repeat;
+    if (codepoint >= 1 && codepoint <= 26) {
+        event->codepoint = (uint32_t)('a' + codepoint - 1);
+        event->modifiers = modifiers | KM_MOD_CTRL;
+    } else {
+        event->codepoint = codepoint;
+        event->modifiers = modifiers;
+    }
+}
+
+static int decode_redirected_key(KmPlatform *platform, unsigned char byte,
+                                 KmEvent *event)
+{
+    uint32_t codepoint;
+
+    if (platform->utf8_needed == 0) {
+        if (byte < 0x80) {
+            codepoint = byte;
+        } else if (byte >= 0xC2 && byte <= 0xDF) {
+            platform->utf8_value = byte & 0x1Fu;
+            platform->utf8_min = 0x80;
+            platform->utf8_needed = 1;
+            return 0;
+        } else if (byte >= 0xE0 && byte <= 0xEF) {
+            platform->utf8_value = byte & 0x0Fu;
+            platform->utf8_min = 0x800;
+            platform->utf8_needed = 2;
+            return 0;
+        } else if (byte >= 0xF0 && byte <= 0xF4) {
+            platform->utf8_value = byte & 0x07u;
+            platform->utf8_min = 0x10000;
+            platform->utf8_needed = 3;
+            return 0;
+        } else {
+            codepoint = 0xFFFD;
+        }
+    } else if ((byte & 0xC0u) == 0x80u) {
+        platform->utf8_value = (platform->utf8_value << 6) | (byte & 0x3Fu);
+        if (--platform->utf8_needed != 0) {
+            return 0;
+        }
+        codepoint = platform->utf8_value;
+        if (codepoint < platform->utf8_min || codepoint > 0x10FFFF ||
+            (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
+            codepoint = 0xFFFD;
+        }
+    } else {
+        platform->utf8_needed = 0;
+        platform->pending_byte = byte;
+        platform->pending_byte_valid = 1;
+        codepoint = 0xFFFD;
+    }
+    finish_key(event, codepoint, 0, 1);
+    return 1;
+}
+
+static uint32_t console_modifiers(DWORD state)
+{
+    uint32_t modifiers = 0;
+    if (state & (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) {
+        modifiers |= KM_MOD_CTRL;
+    }
+    if (state & (LEFT_ALT_PRESSED | RIGHT_ALT_PRESSED)) {
+        modifiers |= KM_MOD_ALT;
+    }
+    if (state & SHIFT_PRESSED) {
+        modifiers |= KM_MOD_SHIFT;
+    }
+    return modifiers;
+}
+
+int km_platform_read_event(KmPlatform *platform, KmEvent *event,
+                           char *error, size_t error_cap)
+{
+    if (platform == NULL || event == NULL) {
+        set_error(error, error_cap, "read event: invalid argument");
+        return -1;
+    }
+    if (!platform->input_console) {
+        for (;;) {
+            unsigned char byte;
+            DWORD read_count = 0;
+            if (platform->pending_byte_valid) {
+                byte = platform->pending_byte;
+                platform->pending_byte_valid = 0;
+                if (decode_redirected_key(platform, byte, event)) return 0;
+                continue;
+            }
+            if (platform->eof_pending) {
+                platform->eof_pending = 0;
+                memset(event, 0, sizeof(*event));
+                event->kind = KM_EVENT_EOF;
+                return 0;
+            }
+            if (!ReadFile(platform->input, &byte, 1, &read_count, NULL)) {
+                if (GetLastError() == ERROR_BROKEN_PIPE) {
+                    read_count = 0;
+                } else {
+                    set_windows_error(error, error_cap, "read input");
+                    return -1;
+                }
+            }
+            if (read_count == 0) {
+                if (platform->utf8_needed != 0) {
+                    platform->utf8_needed = 0;
+                    platform->eof_pending = 1;
+                    finish_key(event, 0xFFFD, 0, 1);
+                    return 0;
+                }
+                memset(event, 0, sizeof(*event));
+                event->kind = KM_EVENT_EOF;
+                return 0;
+            }
+            if (decode_redirected_key(platform, byte, event)) {
+                return 0;
+            }
+        }
+    }
+
+    for (;;) {
+        INPUT_RECORD record;
+        DWORD count = 0;
+        KEY_EVENT_RECORD *key;
+        uint32_t codepoint;
+        uint32_t modifiers;
+
+        if (!ReadConsoleInputW(platform->input, &record, 1, &count)) {
+            set_windows_error(error, error_cap, "read console input");
+            return -1;
+        }
+        if (count == 0) {
+            memset(event, 0, sizeof(*event));
+            event->kind = KM_EVENT_EOF;
+            return 0;
+        }
+        if (record.EventType == WINDOW_BUFFER_SIZE_EVENT) {
+            update_size(platform);
+            memset(event, 0, sizeof(*event));
+            event->kind = KM_EVENT_RESIZE;
+            event->columns = platform->columns;
+            event->rows = platform->rows;
+            return 0;
+        }
+        if (record.EventType != KEY_EVENT || !record.Event.KeyEvent.bKeyDown) {
+            continue;
+        }
+        key = &record.Event.KeyEvent;
+        if (key->uChar.UnicodeChar >= 0xD800 &&
+            key->uChar.UnicodeChar <= 0xDBFF) {
+            platform->high_surrogate = key->uChar.UnicodeChar;
+            continue;
+        }
+        if (key->uChar.UnicodeChar >= 0xDC00 &&
+            key->uChar.UnicodeChar <= 0xDFFF) {
+            if (platform->high_surrogate == 0) {
+                continue;
+            }
+            codepoint = 0x10000u +
+                        (((uint32_t)platform->high_surrogate - 0xD800u) << 10) +
+                        ((uint32_t)key->uChar.UnicodeChar - 0xDC00u);
+            platform->high_surrogate = 0;
+        } else {
+            platform->high_surrogate = 0;
+            codepoint = key->uChar.UnicodeChar;
+        }
+        if (codepoint == 0) {
+            if (key->wVirtualKeyCode == VK_ESCAPE) {
+                codepoint = 27;
+            } else {
+                continue;
+            }
+        }
+        modifiers = console_modifiers(key->dwControlKeyState);
+        if ((key->dwControlKeyState & RIGHT_ALT_PRESSED) &&
+            (key->dwControlKeyState & LEFT_CTRL_PRESSED) && codepoint >= 0x20) {
+            modifiers &= ~(KM_MOD_CTRL | KM_MOD_ALT);
+        }
+        finish_key(event, codepoint, modifiers,
+                   key->wRepeatCount == 0 ? 1 : key->wRepeatCount);
+        return 0;
+    }
+}
