@@ -19,6 +19,11 @@ enum {
     KM_CELL_CONTINUATION = 1u << 0
 };
 
+enum {
+    KM_STYLE_DEFAULT = 0,
+    KM_STYLE_REGION
+};
+
 KmStatus km_cell_grid_create(size_t rows, size_t columns,
                              KmCellGrid **out_grid, KmError *error);
 void km_cell_grid_destroy(KmCellGrid *grid);

@@ -31,6 +31,7 @@ struct KmPlatform {
     unsigned char pending_byte;
     int pending_byte_valid;
     int eof_pending;
+    int discard_escape;
 };
 
 static volatile LONG interactive_active;
@@ -384,7 +385,11 @@ static void finish_key(KmEvent *event, uint32_t codepoint,
 {
     memset(event, 0, sizeof(*event));
     event->repeat = repeat;
-    if (codepoint == 8 || codepoint == 0x7f) {
+    if (codepoint == 0) {
+        event->kind = KM_EVENT_KEY;
+        event->codepoint = ' ';
+        event->modifiers = modifiers | KM_MOD_CTRL;
+    } else if (codepoint == 8 || codepoint == 0x7f) {
         event->kind = KM_EVENT_KEY;
         event->codepoint = 0x7f;
         event->modifiers = modifiers & (KM_MOD_CTRL | KM_MOD_ALT);
@@ -394,6 +399,10 @@ static void finish_key(KmEvent *event, uint32_t codepoint,
     } else if (codepoint >= 1 && codepoint <= 26) {
         event->kind = KM_EVENT_KEY;
         event->codepoint = (uint32_t)('a' + codepoint - 1);
+        event->modifiers = modifiers | KM_MOD_CTRL;
+    } else if (codepoint == 0x1f) {
+        event->kind = KM_EVENT_KEY;
+        event->codepoint = '/';
         event->modifiers = modifiers | KM_MOD_CTRL;
     } else {
         event->kind = codepoint >= 0x20 &&
@@ -451,6 +460,121 @@ static int decode_redirected_key(KmPlatform *platform, unsigned char byte,
     return 1;
 }
 
+static void finish_named_key(KmEvent *event, uint32_t key)
+{
+    memset(event, 0, sizeof(*event));
+    event->kind = KM_EVENT_KEY;
+    event->codepoint = key;
+    event->repeat = 1;
+}
+
+static int read_redirected_byte(KmPlatform *platform, unsigned char *byte,
+                                char *error, size_t error_cap)
+{
+    DWORD count = 0;
+
+    if (!ReadFile(platform->input, byte, 1, &count, NULL)) {
+        if (GetLastError() == ERROR_BROKEN_PIPE) return 0;
+        set_windows_error(error, error_cap, "read input");
+        return -1;
+    }
+    return count == 0 ? 0 : 1;
+}
+
+static int decode_redirected_escape(KmPlatform *platform, KmEvent *event,
+                                    char *error, size_t error_cap)
+{
+    unsigned char byte;
+    int read_status = read_redirected_byte(platform, &byte, error, error_cap);
+
+    if (read_status < 0) return -1;
+    if (read_status == 0) {
+        finish_named_key(event, KM_KEY_ESCAPE);
+        platform->eof_pending = 1;
+        return 0;
+    }
+    if (byte == '[' || byte == 'O') {
+        unsigned char sequence[16];
+        size_t length = 0;
+        bool complete = false;
+
+        while (length < sizeof(sequence)) {
+            read_status = read_redirected_byte(platform, &sequence[length],
+                                               error, error_cap);
+            if (read_status < 0) return -1;
+            if (read_status == 0) {
+                platform->eof_pending = 1;
+                break;
+            }
+            if (sequence[length] >= 0x40 && sequence[length] <= 0x7e) {
+                ++length;
+                complete = true;
+                break;
+            }
+            ++length;
+        }
+        if (!complete && length == sizeof(sequence)) {
+            platform->discard_escape = 1;
+        }
+        if (complete && length == 1) {
+            switch (sequence[0]) {
+            case 'A': finish_named_key(event, KM_KEY_UP); return 0;
+            case 'B': finish_named_key(event, KM_KEY_DOWN); return 0;
+            case 'C': finish_named_key(event, KM_KEY_RIGHT); return 0;
+            case 'D': finish_named_key(event, KM_KEY_LEFT); return 0;
+            case 'H': finish_named_key(event, KM_KEY_HOME); return 0;
+            case 'F': finish_named_key(event, KM_KEY_END); return 0;
+            default: break;
+            }
+        }
+        if (complete && byte == '[' && length == 2 && sequence[0] == '3' &&
+            sequence[1] == '~') {
+            finish_named_key(event, KM_KEY_DELETE);
+            return 0;
+        }
+        finish_named_key(event, KM_KEY_ESCAPE);
+        return 0;
+    }
+    for (;;) {
+        if (decode_redirected_key(platform, byte, event)) break;
+        read_status = read_redirected_byte(platform, &byte, error, error_cap);
+        if (read_status < 0) return -1;
+        if (read_status == 0) {
+            platform->utf8_needed = 0;
+            finish_key(event, 0xfffd, 0, 1);
+            platform->eof_pending = 1;
+            break;
+        }
+    }
+    if (event->kind == KM_EVENT_TEXT) event->kind = KM_EVENT_KEY;
+    event->modifiers |= KM_MOD_ALT;
+    return 0;
+}
+
+static int discard_redirected_escape(KmPlatform *platform, KmEvent *event,
+                                     char *error, size_t error_cap)
+{
+    for (size_t count = 0; count < 4096; ++count) {
+        unsigned char byte;
+        int read_status = read_redirected_byte(platform, &byte,
+                                               error, error_cap);
+        if (read_status < 0) return -1;
+        if (read_status == 0) {
+            platform->discard_escape = 0;
+            platform->eof_pending = 1;
+            finish_named_key(event, KM_KEY_ESCAPE);
+            return 0;
+        }
+        if (byte >= 0x40 && byte <= 0x7e) {
+            platform->discard_escape = 0;
+            finish_named_key(event, KM_KEY_ESCAPE);
+            return 0;
+        }
+    }
+    finish_named_key(event, KM_KEY_ESCAPE);
+    return 0;
+}
+
 static uint32_t console_modifiers(DWORD state)
 {
     uint32_t modifiers = 0;
@@ -464,6 +588,21 @@ static uint32_t console_modifiers(DWORD state)
         modifiers |= KM_MOD_SHIFT;
     }
     return modifiers;
+}
+
+static uint32_t named_console_key(WORD virtual_key)
+{
+    switch (virtual_key) {
+    case VK_ESCAPE: return KM_KEY_ESCAPE;
+    case VK_LEFT: return KM_KEY_LEFT;
+    case VK_RIGHT: return KM_KEY_RIGHT;
+    case VK_UP: return KM_KEY_UP;
+    case VK_DOWN: return KM_KEY_DOWN;
+    case VK_HOME: return KM_KEY_HOME;
+    case VK_END: return KM_KEY_END;
+    case VK_DELETE: return KM_KEY_DELETE;
+    default: return 0;
+    }
 }
 
 int km_platform_read_event(KmPlatform *platform, KmEvent *event,
@@ -489,6 +628,10 @@ int km_platform_read_event(KmPlatform *platform, KmEvent *event,
                 event->kind = KM_EVENT_EOF;
                 return 0;
             }
+            if (platform->discard_escape) {
+                return discard_redirected_escape(platform, event,
+                                                 error, error_cap);
+            }
             if (!ReadFile(platform->input, &byte, 1, &read_count, NULL)) {
                 if (GetLastError() == ERROR_BROKEN_PIPE) {
                     read_count = 0;
@@ -507,6 +650,10 @@ int km_platform_read_event(KmPlatform *platform, KmEvent *event,
                 memset(event, 0, sizeof(*event));
                 event->kind = KM_EVENT_EOF;
                 return 0;
+            }
+            if (platform->utf8_needed == 0 && byte == 0x1b) {
+                return decode_redirected_escape(platform, event,
+                                                error, error_cap);
             }
             if (decode_redirected_key(platform, byte, event)) {
                 return 0;
@@ -560,12 +707,30 @@ int km_platform_read_event(KmPlatform *platform, KmEvent *event,
             platform->high_surrogate = 0;
             codepoint = key->uChar.UnicodeChar;
         }
+        if (key->wVirtualKeyCode == VK_ESCAPE) {
+            memset(event, 0, sizeof(*event));
+            event->kind = KM_EVENT_KEY;
+            event->codepoint = KM_KEY_ESCAPE;
+            event->modifiers = console_modifiers(key->dwControlKeyState);
+            event->repeat = key->wRepeatCount == 0 ? 1 : key->wRepeatCount;
+            return 0;
+        }
         if (codepoint == 0) {
-            if (key->wVirtualKeyCode == VK_ESCAPE) {
-                codepoint = 27;
-            } else {
-                continue;
+            uint32_t named = named_console_key(key->wVirtualKeyCode);
+            if (key->wVirtualKeyCode == VK_SPACE &&
+                (key->dwControlKeyState &
+                 (LEFT_CTRL_PRESSED | RIGHT_CTRL_PRESSED)) != 0) {
+                finish_key(event, 0, console_modifiers(key->dwControlKeyState),
+                           key->wRepeatCount == 0 ? 1 : key->wRepeatCount);
+                return 0;
             }
+            if (named == 0) continue;
+            memset(event, 0, sizeof(*event));
+            event->kind = KM_EVENT_KEY;
+            event->codepoint = named;
+            event->modifiers = console_modifiers(key->dwControlKeyState);
+            event->repeat = key->wRepeatCount == 0 ? 1 : key->wRepeatCount;
+            return 0;
         }
         modifiers = console_modifiers(key->dwControlKeyState);
         if ((key->dwControlKeyState & RIGHT_ALT_PRESSED) &&

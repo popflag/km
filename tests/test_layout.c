@@ -1,4 +1,5 @@
 #include "layout.h"
+#include "file.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -33,6 +34,8 @@ static void test_unicode_and_controls(void)
     KmBuffer *buffer = NULL;
     KmView *view = NULL;
     KmCellGrid *grid = NULL;
+    KmCommandLoop *loop = NULL;
+    KmEvent event = {0};
     KmLayoutResult layout;
     KmError error;
     char *frame;
@@ -56,6 +59,20 @@ static void test_unicode_and_controls(void)
     CHECK(memchr(frame, 0, frame_len) == NULL);
     free(frame);
     km_cell_grid_destroy(grid);
+
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    event.kind = KM_EVENT_KEY;
+    event.codepoint = ' ';
+    event.modifiers = KM_MOD_CTRL;
+    event.repeat = 1;
+    CHECK(km_command_loop_dispatch(loop, view, &event, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){8}, &error) == KM_OK);
+    CHECK(km_layout_view(buffer, view, 4, 12, 0, NULL, &grid, &layout,
+                         &error) == KM_OK);
+    CHECK(km_cell_grid_cell(grid, 0, 4)->style_id == KM_STYLE_REGION);
+    CHECK(km_cell_grid_cell(grid, 0, 5)->style_id == KM_STYLE_REGION);
+    km_cell_grid_destroy(grid);
+    km_command_loop_destroy(loop);
 
     CHECK(km_view_set_point(view, (KmBytePos){9}, &error) == KM_OK);
     CHECK(km_layout_view(buffer, view, 4, 12, 0, "Quit", &grid, &layout,
@@ -155,10 +172,41 @@ static void test_wrap_and_viewport(void)
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
 }
 
+static void test_unicode_file_name_status(void)
+{
+    static const char name[] = "km-status-\xe4\xb8\xad-7f31c9.tmp";
+    static const uint8_t cjk[] = {0xe4, 0xb8, 0xad};
+    KmPath *path = NULL;
+    KmFile *file = NULL;
+    KmBuffer *buffer = NULL;
+    KmView *view = NULL;
+    KmCellGrid *grid = NULL;
+    KmLayoutResult layout;
+    uint8_t *text = NULL;
+    size_t len = 0;
+    KmError error;
+
+    CHECK(km_path_from_utf8(name, &path, &error) == KM_OK);
+    CHECK(km_file_load(path, &file, &text, &len, &error) == KM_OK);
+    CHECK(len == 0);
+    CHECK(km_buffer_create_file(file, text, len, &buffer, &error) == KM_OK);
+    free(text);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_layout_view(buffer, view, 2, 40, 0, NULL, &grid, &layout,
+                         &error) == KM_OK);
+    check_glyph(grid, 1, 13, cjk, sizeof(cjk));
+    CHECK(km_cell_grid_cell(grid, 1, 13)->width == 2);
+    CHECK(km_cell_grid_cell(grid, 1, 14)->flags == KM_CELL_CONTINUATION);
+    km_cell_grid_destroy(grid);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+}
+
 int main(void)
 {
     test_unicode_and_controls();
     test_wrap_and_viewport();
+    test_unicode_file_name_status();
     puts("layout tests passed");
     return 0;
 }

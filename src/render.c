@@ -135,7 +135,8 @@ KmStatus km_cell_grid_put(KmCellGrid *grid, size_t row, size_t column,
     KmStatus status;
 
     if (grid == NULL || glyph == NULL || glyph_len == 0 || (width != 1 && width != 2) ||
-        row >= grid->rows || column >= grid->columns || width > grid->columns - column) {
+        style_id > KM_STYLE_REGION || row >= grid->rows ||
+        column >= grid->columns || width > grid->columns - column) {
         return fail(error, KM_ERR_INVALID, "write CellGrid cell");
     }
     index = row * grid->columns + column;
@@ -291,6 +292,20 @@ static KmStatus append_bytes(char **bytes, size_t *length, size_t *capacity,
     return KM_OK;
 }
 
+static KmStatus select_style(char **bytes, size_t *length, size_t *capacity,
+                             uint16_t *current, uint16_t wanted,
+                             KmError *error)
+{
+    KmStatus status;
+
+    if (*current == wanted) return KM_OK;
+    status = wanted == KM_STYLE_REGION
+                 ? append_bytes(bytes, length, capacity, "\x1b[7m", 4, error)
+                 : append_bytes(bytes, length, capacity, "\x1b[27m", 5, error);
+    if (status == KM_OK) *current = wanted;
+    return status;
+}
+
 KmStatus km_cell_grid_encode_vt(const KmCellGrid *grid, bool clear_screen,
                                 char **out_bytes, size_t *out_len,
                                 KmError *error)
@@ -299,6 +314,7 @@ KmStatus km_cell_grid_encode_vt(const KmCellGrid *grid, bool clear_screen,
     size_t length = 0;
     size_t capacity = 0;
     size_t last_row = 0;
+    uint16_t current_style = KM_STYLE_DEFAULT;
     KmStatus status;
 
     if (grid == NULL || out_bytes == NULL || out_len == NULL) {
@@ -327,6 +343,9 @@ KmStatus km_cell_grid_encode_vt(const KmCellGrid *grid, bool clear_screen,
         for (size_t column = 0; column <= last_column; ++column) {
             const KmCell *cell = &grid->cells[row * grid->columns + column];
             if ((cell->flags & KM_CELL_CONTINUATION) != 0) continue;
+            status = select_style(&bytes, &length, &capacity, &current_style,
+                                  cell->style_id, error);
+            if (status != KM_OK) goto fail;
             if (cell->glyph_len == 0) {
                 status = append_bytes(&bytes, &length, &capacity, " ", 1, error);
             } else {
@@ -336,6 +355,9 @@ KmStatus km_cell_grid_encode_vt(const KmCellGrid *grid, bool clear_screen,
             }
             if (status != KM_OK) goto fail;
         }
+        status = select_style(&bytes, &length, &capacity, &current_style,
+                              KM_STYLE_DEFAULT, error);
+        if (status != KM_OK) goto fail;
         status = append_bytes(&bytes, &length, &capacity,
                               clear_screen ? "\r\n" : "\n",
                               clear_screen ? 2 : 1, error);
@@ -363,6 +385,7 @@ KmStatus km_cell_grid_encode_frame_vt(const KmCellGrid *grid,
     int position_len;
     KmStatus status;
     size_t row;
+    uint16_t current_style = KM_STYLE_DEFAULT;
 
     if (grid == NULL || out_bytes == NULL || out_len == NULL ||
         cursor_row >= grid->rows || cursor_column >= grid->columns) {
@@ -371,7 +394,7 @@ KmStatus km_cell_grid_encode_frame_vt(const KmCellGrid *grid,
     *out_bytes = NULL;
     *out_len = 0;
     status = append_bytes(&bytes, &length, &capacity,
-                          "\x1b[?25l\x1b[2J", 10, error);
+                          "\x1b[0m\x1b[?25l\x1b[2J", 14, error);
     if (status != KM_OK) goto fail;
     for (row = 0; row < grid->rows; ++row) {
         size_t column;
@@ -397,6 +420,9 @@ KmStatus km_cell_grid_encode_frame_vt(const KmCellGrid *grid,
         for (column = 0; column <= last_column; ++column) {
             const KmCell *cell = &grid->cells[row * grid->columns + column];
             if ((cell->flags & KM_CELL_CONTINUATION) != 0) continue;
+            status = select_style(&bytes, &length, &capacity, &current_style,
+                                  cell->style_id, error);
+            if (status != KM_OK) goto fail;
             status = cell->glyph_len == 0
                          ? append_bytes(&bytes, &length, &capacity, " ", 1, error)
                          : append_bytes(
@@ -405,6 +431,9 @@ KmStatus km_cell_grid_encode_frame_vt(const KmCellGrid *grid,
                                cell->glyph_len, error);
             if (status != KM_OK) goto fail;
         }
+        status = select_style(&bytes, &length, &capacity, &current_style,
+                              KM_STYLE_DEFAULT, error);
+        if (status != KM_OK) goto fail;
     }
     position_len = snprintf(position, sizeof(position), "\x1b[%llu;%lluH\x1b[?25h",
                             (unsigned long long)cursor_row + 1u,

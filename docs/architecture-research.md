@@ -1,6 +1,7 @@
 # 类 GNU Emacs 文本编辑器架构调研记录
 
-> 状态：架构基线，Phase 0/1 开始实现
+> 状态：架构基线；Phase 0/1 已完成，Phase 2/3 的单 Buffer TUI 与 Phase 4
+> 的单文件安全保存纵切已实现
 > 调研日期：2026-07-20（UTC-08:00）
 > 目标语言：C17。原需求中的“C20”不是 ISO C 标准版本；若实际指 C++20，需要重新评估本文的类型、构建和插件 ABI 结论。
 > 决策标记：`采用`、`拒绝`、`待验证`、`未来`。
@@ -28,6 +29,28 @@
 - 非 UTF-8 编码的自动探测与无损编辑。
 - 二进制插件 ABI、插件热卸载和不可信插件隔离。
 - 所有历史终端、旧 Windows Console 和任意 `$TERM` 的兼容。
+
+### 1.1 当前可运行纵切
+
+当前 `km [file]` 实现一个单 Buffer/单 View 的终端编辑器：
+
+- 严格 UTF-8 文件加载，保留 UTF-8 BOM 和统一 LF/CRLF/CR policy；非法
+  UTF-8、mixed EOL、symlink/reparse point 和多 hard-link 目标拒绝写入。
+- `C-x C-s` 使用同目录排他临时文件、数据 flush 和原子 replace；保存前
+  检查文件 identity，成功后才更新 `saved_state_id`。
+- 支持 code-point 左右移动/删除、按 cell column 的上下移动、行首/行尾、
+  mark/region、`C-w`、`M-w`、`C-k`、`C-y`、undo/redo 和大小写敏感的
+  UTF-8 增量 `C-s`。
+- 当前 kill ring 只有一个 entry；kill coalescing、`yank-pop` 和完整 Emacs
+  undo 遍历仍需差分测试后扩展。
+- POSIX 输入识别 ESC Meta、常见 CSI/SS3 方向键和 bracketed paste；Win32
+  record 输入识别对应 named keys，但按平台限制不声称有 paste boundary。
+- Renderer 当前仍执行完整 CellGrid frame 输出；front/back row diff 是下一
+  个纯性能步骤，不影响上述编辑和数据安全契约。
+
+当前纵切不等于“完整 GNU Emacs”。多 Buffer/Window、minibuffer 文件切换、
+rectangle、完整 search/replace、keyboard macro、mode/keymap 扩展和插件仍按
+后续 Phase 分别冻结行为与实现。
 
 尚待产品层冻结的两项：
 
@@ -154,9 +177,13 @@ Editor -> Document -> Buffer(s) -> View(s)
 
 ```text
 base <- document/text <- editor/commands <- layout/render <- app/platform
+     <- file/path -----^
 ```
 
-核心编辑代码不知道 `termios`、Win32 handle、VT sequence 或文件系统 API。平台代码不直接修改 Document，只产生事件或返回显式结果。
+`file/path` 是低于 Buffer 的窄服务：公开类型保持 opaque，平台实现分别持有
+POSIX raw path 或 Windows UTF-16 path/identity。Buffer 可以拥有并调用该服务，
+但核心编辑代码仍不知道 `termios`、Win32 handle、VT sequence 或具体文件系统
+API。平台终端代码不直接修改 Document，只产生事件或返回显式结果。
 
 首版为单线程。Editor、Document、Buffer、View、undo 和 command callback 全部只由主线程访问。不建立锁、worker pool 或跨线程 observer。
 

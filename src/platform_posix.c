@@ -30,6 +30,10 @@ struct KmPlatform {
     unsigned char pending_byte;
     int pending_byte_valid;
     int eof_pending;
+    uint8_t *paste;
+    size_t paste_len;
+    size_t paste_cap;
+    int discard_escape;
 };
 
 static volatile sig_atomic_t resize_pending;
@@ -175,7 +179,7 @@ static void restore_signals(KmPlatform *platform)
 
 int km_platform_open(KmPlatform **out, char *error, size_t error_cap)
 {
-    static const char enter_screen[] = "\x1b[?1049h\x1b[?25l";
+    static const char enter_screen[] = "\x1b[?1049h\x1b[?2004h\x1b[?25l";
     KmPlatform *platform;
     struct termios raw;
 
@@ -244,7 +248,7 @@ int km_platform_open(KmPlatform **out, char *error, size_t error_cap)
 
 void km_platform_close(KmPlatform *platform)
 {
-    static const char leave_screen[] = "\x1b[?25h\x1b[?1049l";
+    static const char leave_screen[] = "\x1b[?25h\x1b[?2004l\x1b[?1049l";
     int terminating_signal;
 
     if (platform == NULL) {
@@ -264,6 +268,7 @@ void km_platform_close(KmPlatform *platform)
     if (platform->interactive) {
         interactive_active = 0;
     }
+    free(platform->paste);
     free(platform);
     if (terminating_signal != 0) {
         (void)raise(terminating_signal);
@@ -341,7 +346,11 @@ static void finish_key(KmEvent *event, uint32_t codepoint)
 {
     memset(event, 0, sizeof(*event));
     event->repeat = 1;
-    if (codepoint == 8 || codepoint == 0x7f) {
+    if (codepoint == 0) {
+        event->kind = KM_EVENT_KEY;
+        event->codepoint = ' ';
+        event->modifiers = KM_MOD_CTRL;
+    } else if (codepoint == 8 || codepoint == 0x7f) {
         event->kind = KM_EVENT_KEY;
         event->codepoint = 0x7f;
     } else if (codepoint == '\r' || codepoint == '\n') {
@@ -351,10 +360,235 @@ static void finish_key(KmEvent *event, uint32_t codepoint)
         event->kind = KM_EVENT_KEY;
         event->codepoint = (uint32_t)('a' + codepoint - 1);
         event->modifiers = KM_MOD_CTRL;
+    } else if (codepoint == 0x1f) {
+        event->kind = KM_EVENT_KEY;
+        event->codepoint = '/';
+        event->modifiers = KM_MOD_CTRL;
     } else {
         event->kind = codepoint >= 0x20 ? KM_EVENT_TEXT : KM_EVENT_KEY;
         event->codepoint = codepoint;
     }
+}
+
+static void finish_named_key(KmEvent *event, uint32_t key)
+{
+    memset(event, 0, sizeof(*event));
+    event->kind = KM_EVENT_KEY;
+    event->codepoint = key;
+    event->repeat = 1;
+}
+
+static int decode_key(KmPlatform *platform, unsigned char byte, KmEvent *event);
+
+/* 1 byte, 0 timeout/signal, 2 EOF, -1 error. */
+static int read_raw_byte(KmPlatform *platform, unsigned char *byte,
+                         int timeout_ms, char *error, size_t error_cap)
+{
+    for (;;) {
+        ssize_t count;
+
+        if (platform->interactive) {
+            struct pollfd descriptors[2];
+            int ready;
+
+            if (terminate_pending) return 0;
+            descriptors[0].fd = STDIN_FILENO;
+            descriptors[0].events = POLLIN;
+            descriptors[0].revents = 0;
+            descriptors[1].fd = platform->signal_read_fd;
+            descriptors[1].events = POLLIN;
+            descriptors[1].revents = 0;
+            ready = poll(descriptors, 2, timeout_ms);
+            if (ready == 0) return 0;
+            if (ready < 0 && errno == EINTR) continue;
+            if (ready < 0) {
+                set_error(error, error_cap, "poll terminal: %s", strerror(errno));
+                return -1;
+            }
+            if ((descriptors[1].revents & POLLIN) != 0) {
+                unsigned char discard[64];
+                while (read(platform->signal_read_fd, discard,
+                            sizeof(discard)) > 0) {
+                }
+                return 0;
+            }
+        }
+        count = read(STDIN_FILENO, byte, 1);
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0) {
+            set_error(error, error_cap, "read terminal: %s", strerror(errno));
+            return -1;
+        }
+        return count == 0 ? 2 : 1;
+    }
+}
+
+static int read_bracketed_paste(KmPlatform *platform, KmEvent *event,
+                                char *error, size_t error_cap)
+{
+    static const uint8_t end_marker[] = {0x1b, '[', '2', '0', '1', '~'};
+
+    platform->paste_len = 0;
+    for (;;) {
+        unsigned char byte;
+        int read_status = read_raw_byte(platform, &byte, -1, error, error_cap);
+        uint8_t *paste;
+        size_t capacity;
+
+        if (read_status < 0) return -1;
+        if (read_status == 0 && resize_pending) continue;
+        if (read_status != 1) {
+            set_error(error, error_cap, "read paste: incomplete delimiter");
+            return -1;
+        }
+        if (platform->paste_len == (size_t)PTRDIFF_MAX) {
+            set_error(error, error_cap, "read paste: input is too large");
+            return -1;
+        }
+        if (platform->paste_len == platform->paste_cap) {
+            capacity = platform->paste_cap == 0 ? 256 : platform->paste_cap * 2;
+            if (capacity < platform->paste_cap || capacity > (size_t)PTRDIFF_MAX) {
+                capacity = (size_t)PTRDIFF_MAX;
+            }
+            paste = (uint8_t *)realloc(platform->paste, capacity);
+            if (paste == NULL) {
+                set_error(error, error_cap, "read paste: out of memory");
+                return -1;
+            }
+            platform->paste = paste;
+            platform->paste_cap = capacity;
+        }
+        platform->paste[platform->paste_len++] = byte;
+        if (platform->paste_len >= sizeof(end_marker) &&
+            memcmp(platform->paste + platform->paste_len - sizeof(end_marker),
+                   end_marker, sizeof(end_marker)) == 0) {
+            platform->paste_len -= sizeof(end_marker);
+            memset(event, 0, sizeof(*event));
+            event->kind = KM_EVENT_PASTE;
+            event->repeat = 1;
+            event->text = platform->paste;
+            event->text_len = platform->paste_len;
+            return 0;
+        }
+    }
+}
+
+static int decode_escape(KmPlatform *platform, KmEvent *event,
+                         char *error, size_t error_cap)
+{
+    unsigned char byte;
+    int read_status = read_raw_byte(platform, &byte,
+                                    platform->interactive ? 50 : -1,
+                                    error, error_cap);
+
+    if (read_status < 0) return -1;
+    if (read_status != 1) {
+        finish_named_key(event, KM_KEY_ESCAPE);
+        if (read_status == 2) platform->eof_pending = 1;
+        return 0;
+    }
+    if (byte == '[' || byte == 'O') {
+        unsigned char sequence[16];
+        size_t length = 0;
+        bool complete = false;
+
+        while (length < sizeof(sequence)) {
+            read_status = read_raw_byte(platform, &sequence[length],
+                                        platform->interactive ? 50 : -1,
+                                        error, error_cap);
+            if (read_status < 0) return -1;
+            if (read_status != 1) {
+                if (read_status == 2) platform->eof_pending = 1;
+                break;
+            }
+            if (sequence[length] >= 0x40 && sequence[length] <= 0x7e) {
+                ++length;
+                complete = true;
+                break;
+            }
+            ++length;
+        }
+        if (!complete && length == sizeof(sequence)) {
+            platform->discard_escape = 1;
+        }
+        if (complete && length == 1) {
+            switch (sequence[0]) {
+            case 'A': finish_named_key(event, KM_KEY_UP); return 0;
+            case 'B': finish_named_key(event, KM_KEY_DOWN); return 0;
+            case 'C': finish_named_key(event, KM_KEY_RIGHT); return 0;
+            case 'D': finish_named_key(event, KM_KEY_LEFT); return 0;
+            case 'H': finish_named_key(event, KM_KEY_HOME); return 0;
+            case 'F': finish_named_key(event, KM_KEY_END); return 0;
+            default: break;
+            }
+        }
+        if (complete && byte == '[' && length == 2 &&
+            sequence[0] == '3' && sequence[1] == '~') {
+            finish_named_key(event, KM_KEY_DELETE);
+            return 0;
+        }
+        if (complete && byte == '[' && length == 2 &&
+            (sequence[0] == '1' || sequence[0] == '7') &&
+            sequence[1] == '~') {
+            finish_named_key(event, KM_KEY_HOME);
+            return 0;
+        }
+        if (complete && byte == '[' && length == 2 &&
+            (sequence[0] == '4' || sequence[0] == '8') &&
+            sequence[1] == '~') {
+            finish_named_key(event, KM_KEY_END);
+            return 0;
+        }
+        if (complete && byte == '[' && length == 4 &&
+            memcmp(sequence, "200~", 4) == 0) {
+            return read_bracketed_paste(platform, event, error, error_cap);
+        }
+        finish_named_key(event, KM_KEY_ESCAPE);
+        return 0;
+    }
+    for (;;) {
+        if (decode_key(platform, byte, event)) break;
+        read_status = read_raw_byte(platform, &byte,
+                                    platform->interactive ? 50 : -1,
+                                    error, error_cap);
+        if (read_status < 0) return -1;
+        if (read_status != 1) {
+            platform->utf8_needed = 0;
+            finish_key(event, 0xfffd);
+            if (read_status == 2) platform->eof_pending = 1;
+            break;
+        }
+    }
+    if (event->kind == KM_EVENT_TEXT) event->kind = KM_EVENT_KEY;
+    event->modifiers |= KM_MOD_ALT;
+    return 0;
+}
+
+static int discard_escape_sequence(KmPlatform *platform, KmEvent *event,
+                                   char *error, size_t error_cap)
+{
+    for (size_t count = 0; count < 4096; ++count) {
+        unsigned char byte;
+        int read_status = read_raw_byte(platform, &byte,
+                                        platform->interactive ? 50 : -1,
+                                        error, error_cap);
+        if (read_status < 0) return -1;
+        if (read_status != 1) {
+            if (read_status == 2) {
+                platform->eof_pending = 1;
+                platform->discard_escape = 0;
+            }
+            finish_named_key(event, KM_KEY_ESCAPE);
+            return 0;
+        }
+        if (byte >= 0x40 && byte <= 0x7e) {
+            platform->discard_escape = 0;
+            finish_named_key(event, KM_KEY_ESCAPE);
+            return 0;
+        }
+    }
+    finish_named_key(event, KM_KEY_ESCAPE);
+    return 0;
 }
 
 static int decode_key(KmPlatform *platform, unsigned char byte, KmEvent *event)
@@ -440,38 +674,15 @@ int km_platform_read_event(KmPlatform *platform, KmEvent *event,
             event->kind = KM_EVENT_EOF;
             return 0;
         }
-        if (platform->interactive) {
-            struct pollfd descriptors[2];
-            int ready;
-            descriptors[0].fd = STDIN_FILENO;
-            descriptors[0].events = POLLIN;
-            descriptors[0].revents = 0;
-            descriptors[1].fd = platform->signal_read_fd;
-            descriptors[1].events = POLLIN;
-            descriptors[1].revents = 0;
-            ready = poll(descriptors, 2, -1);
-            if (ready < 0 && errno == EINTR) {
-                continue;
-            }
-            if (ready < 0) {
-                set_error(error, error_cap, "poll terminal: %s", strerror(errno));
-                return -1;
-            }
-            if ((descriptors[1].revents & POLLIN) != 0) {
-                unsigned char discard[64];
-                while (read(platform->signal_read_fd, discard,
-                            sizeof(discard)) > 0) {
-                }
-                continue;
-            }
+        if (platform->discard_escape) {
+            return discard_escape_sequence(platform, event, error, error_cap);
         }
-        count = read(STDIN_FILENO, &byte, 1);
-        if (count < 0 && errno == EINTR) {
-            continue;
-        }
-        if (count < 0) {
-            set_error(error, error_cap, "read terminal: %s", strerror(errno));
-            return -1;
+        {
+            int read_status = read_raw_byte(platform, &byte, -1,
+                                            error, error_cap);
+            if (read_status < 0) return -1;
+            if (read_status == 0) continue;
+            count = read_status == 2 ? 0 : 1;
         }
         if (count == 0) {
             if (platform->utf8_needed != 0) {
@@ -483,6 +694,9 @@ int km_platform_read_event(KmPlatform *platform, KmEvent *event,
             memset(event, 0, sizeof(*event));
             event->kind = KM_EVENT_EOF;
             return 0;
+        }
+        if (platform->utf8_needed == 0 && byte == 0x1b) {
+            return decode_escape(platform, event, error, error_cap);
         }
         if (decode_key(platform, byte, event)) {
             return 0;

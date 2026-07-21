@@ -98,9 +98,12 @@ static void test_interactive_frame(void)
     CHECK(km_cell_grid_create(2, 3, &grid, &error) == KM_OK);
     CHECK(km_cell_grid_put(grid, 1, 2, (const uint8_t *)"x", 1, 1, 0,
                            &error) == KM_OK);
+    CHECK(km_cell_grid_put(grid, 0, 0, (const uint8_t *)"r", 1, 1,
+                           KM_STYLE_REGION, &error) == KM_OK);
     CHECK(km_cell_grid_encode_frame_vt(grid, 1, 2, &output, &output_len,
                                        &error) == KM_OK);
     CHECK(strstr(output, "\x1b[2;1H  x") != NULL);
+    CHECK(strstr(output, "\x1b[1;1H\x1b[7mr\x1b[27m") != NULL);
     CHECK(strstr(output, "\x1b[2;3H\x1b[?25h") != NULL);
     CHECK(output_len != 0 && output[output_len - 1] == 'h');
     CHECK(memchr(output, '\n', output_len) == NULL);

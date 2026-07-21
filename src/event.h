@@ -20,6 +20,17 @@ enum {
     KM_MOD_SHIFT = 1u << 2
 };
 
+enum {
+    KM_KEY_ESCAPE = 0x110000u,
+    KM_KEY_LEFT,
+    KM_KEY_RIGHT,
+    KM_KEY_UP,
+    KM_KEY_DOWN,
+    KM_KEY_HOME,
+    KM_KEY_END,
+    KM_KEY_DELETE
+};
+
 typedef struct {
     KmEventKind kind;
     uint32_t codepoint;

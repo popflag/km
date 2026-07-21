@@ -124,7 +124,16 @@ static int fail(const char *message)
 int main(void)
 {
     static const unsigned char input[] = {
-        0x07, 0xC2, 'A', '\r', 0x7f, 0xE2, 0x82
+        0x07, 0x1f, 0xC2, 'A', '\r', 0x7f, 0x00,
+        0x1b, '[', 'A', 0x1b, '[', '3', '~', 0x1b, '3',
+#ifndef _WIN32
+        0x1b, '[', '2', '0', '0', '~', 'p', 0, 'q',
+        0x1b, '[', '2', '0', '1', '~',
+#endif
+        0x1b, '[',
+        '1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
+        '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', 'z', 'X',
+        0xE2, 0x82
     };
     Capture capture;
     KmPlatform *platform = NULL;
@@ -157,6 +166,12 @@ int main(void)
         return fail("C-g was not normalized as a control key event");
     }
     if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_KEY || event.codepoint != '/' ||
+        event.modifiers != KM_MOD_CTRL) {
+        km_platform_close(platform);
+        return fail("C-/ was not normalized as a control key event");
+    }
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
         event.kind != KM_EVENT_TEXT || event.codepoint != 0xFFFD) {
         km_platform_close(platform);
         return fail("invalid UTF-8 did not produce replacement");
@@ -175,6 +190,45 @@ int main(void)
         event.kind != KM_EVENT_KEY || event.codepoint != 0x7f) {
         km_platform_close(platform);
         return fail("Backspace was not normalized as a key event");
+    }
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_KEY || event.codepoint != ' ' ||
+        event.modifiers != KM_MOD_CTRL) {
+        km_platform_close(platform);
+        return fail("C-Space was not normalized as a control key event");
+    }
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_KEY || event.codepoint != KM_KEY_UP) {
+        km_platform_close(platform);
+        return fail("cursor-up sequence was not normalized");
+    }
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_KEY || event.codepoint != KM_KEY_DELETE) {
+        km_platform_close(platform);
+        return fail("Delete sequence was not normalized");
+    }
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_KEY || event.codepoint != '3' ||
+        event.modifiers != KM_MOD_ALT) {
+        km_platform_close(platform);
+        return fail("Meta key was not normalized");
+    }
+#ifndef _WIN32
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_PASTE || event.text_len != 3 ||
+        memcmp(event.text, "p\0q", 3) != 0) {
+        km_platform_close(platform);
+        return fail("bracketed paste was not normalized as one event");
+    }
+#endif
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_KEY || event.codepoint != KM_KEY_ESCAPE ||
+        km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_KEY || event.codepoint != KM_KEY_ESCAPE ||
+        km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_TEXT || event.codepoint != 'X') {
+        km_platform_close(platform);
+        return fail("overlong CSI bytes leaked into text events");
     }
     if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
         event.kind != KM_EVENT_TEXT || event.codepoint != 0xFFFD) {

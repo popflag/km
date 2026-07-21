@@ -38,11 +38,13 @@
 
 #ifdef _WIN32
 #define KM_PLATFORM_SOURCE "src/platform_win32.c"
+#define KM_FILE_SOURCE "src/file_win32.c"
 #define KM_EXE_SUFFIX ".exe"
 #define KM_UTF8PROC_OBJECT "build/utf8proc-msvc.obj"
 #define KM_TOOLCHAIN_ID "msvc-c17-v1"
 #else
 #define KM_PLATFORM_SOURCE "src/platform_posix.c"
+#define KM_FILE_SOURCE "src/file_posix.c"
 #define KM_EXE_SUFFIX ""
 #if defined(__clang__)
 #define KM_UTF8PROC_OBJECT "build/utf8proc-clang.o"
@@ -70,8 +72,10 @@ static const char *const km_sources[] = {
     "src/base.c",
     "src/document.c",
     "src/editor.c",
+    KM_FILE_SOURCE,
     "src/layout.c",
     "src/render.c",
+    "src/unicode.c",
 };
 
 static char *join_path(const char *parent, const char *name)
@@ -202,7 +206,41 @@ static bool remove_tree(const char *path)
 
 static bool clean(void)
 {
-    return remove_tree("build");
+    char quarantine[96];
+
+#ifdef _WIN32
+    DWORD attributes = GetFileAttributesA("build");
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        DWORD code = GetLastError();
+        if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) {
+            return true;
+        }
+        nob_log(NOB_ERROR, "could not inspect build: Windows error %lu",
+                (unsigned long)code);
+        return false;
+    }
+    (void)snprintf(quarantine, sizeof(quarantine), "build.clean.%lu",
+                   (unsigned long)GetCurrentProcessId());
+    if (!MoveFileExA("build", quarantine, 0)) {
+        nob_log(NOB_ERROR, "could not quarantine build: Windows error %lu",
+                (unsigned long)GetLastError());
+        return false;
+    }
+#else
+    struct stat info;
+    if (lstat("build", &info) != 0) {
+        if (errno == ENOENT) return true;
+        nob_log(NOB_ERROR, "could not inspect build: %s", strerror(errno));
+        return false;
+    }
+    (void)snprintf(quarantine, sizeof(quarantine), "build.clean.%lu",
+                   (unsigned long)getpid());
+    if (rename("build", quarantine) != 0) {
+        nob_log(NOB_ERROR, "could not quarantine build: %s", strerror(errno));
+        return false;
+    }
+#endif
+    return remove_tree(quarantine);
 }
 
 static bool ensure_toolchain_marker(void)
@@ -239,6 +277,7 @@ static void append_common_flags(Nob_Cmd *cmd, bool project_code)
 {
 #if defined(_MSC_VER)
     nob_cmd_append(cmd, "/nologo", "/std:c17");
+    nob_cmd_append(cmd, "/D_CRT_SECURE_NO_WARNINGS");
     if (project_code) {
         nob_cmd_append(cmd, "/W4", "/WX");
     } else {
@@ -342,9 +381,11 @@ static bool build_executable(const char *name, const char *entry,
     inputs[input_count++] = "src/document.h";
     inputs[input_count++] = "src/editor.h";
     inputs[input_count++] = "src/event.h";
+    inputs[input_count++] = "src/file.h";
     inputs[input_count++] = "src/layout.h";
     inputs[input_count++] = "src/platform.h";
     inputs[input_count++] = "src/render.h";
+    inputs[input_count++] = "src/unicode.h";
     inputs[input_count++] = "third_party/utf8proc/utf8proc.h";
     inputs[input_count++] = KM_UTF8PROC_OBJECT;
     inputs[input_count++] = KM_TOOLCHAIN_MARKER;
@@ -363,7 +404,8 @@ static bool build_executable(const char *name, const char *entry,
     if (with_platform) nob_cmd_append(&cmd, KM_PLATFORM_SOURCE);
     nob_cmd_append(&cmd, KM_UTF8PROC_OBJECT);
 #if defined(_MSC_VER)
-    nob_cmd_append(&cmd, "/Fo:build/", nob_temp_sprintf("/Fe:%s", output));
+    nob_cmd_append(&cmd, "/Fo:build/", nob_temp_sprintf("/Fe:%s", output),
+                   "/link", "Shell32.lib");
 #else
     nob_cmd_append(&cmd, "-o", output);
 #endif
@@ -385,7 +427,10 @@ static bool build_test_document(void)
 
 static bool build_test_editor(void)
 {
-    const char *sources[] = {"src/base.c", "src/document.c", "src/editor.c"};
+    const char *sources[] = {
+        "src/base.c", "src/document.c", "src/editor.c", "src/unicode.c",
+        KM_FILE_SOURCE,
+    };
     return build_executable("test_editor", "tests/test_editor.c",
                             sources, NOB_ARRAY_LEN(sources), false);
 }
@@ -394,7 +439,7 @@ static bool build_test_layout(void)
 {
     const char *sources[] = {
         "src/base.c", "src/document.c", "src/editor.c",
-        "src/layout.c", "src/render.c",
+        "src/layout.c", "src/render.c", "src/unicode.c", KM_FILE_SOURCE,
     };
     return build_executable("test_layout", "tests/test_layout.c",
                             sources, NOB_ARRAY_LEN(sources), false);
@@ -411,6 +456,16 @@ static bool build_test_render(void)
 {
     const char *sources[] = {"src/base.c", "src/render.c"};
     return build_executable("test_render", "tests/test_render.c",
+                            sources, NOB_ARRAY_LEN(sources), false);
+}
+
+static bool build_test_file(void)
+{
+    const char *sources[] = {
+        "src/base.c", "src/document.c", "src/editor.c", "src/unicode.c",
+        KM_FILE_SOURCE,
+    };
+    return build_executable("test_file", "tests/test_file.c",
                             sources, NOB_ARRAY_LEN(sources), false);
 }
 
@@ -434,6 +489,7 @@ static bool test(void)
     if (!build_km() || !build_test_document() || !build_test_editor() ||
         !build_test_layout() ||
         !build_test_render() ||
+        !build_test_file() ||
         !build_test_platform()
 #ifndef _WIN32
         || !build_test_platform_pty()
@@ -444,6 +500,7 @@ static bool test(void)
     if (!run_test("test_document") || !run_test("test_editor") ||
         !run_test("test_layout") ||
         !run_test("test_render") ||
+        !run_test("test_file") ||
         !run_test("test_platform")) return false;
 #ifndef _WIN32
     if (!run_test("test_platform_pty")) return false;

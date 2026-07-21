@@ -1,5 +1,10 @@
 #include "editor.h"
 
+#include "file.h"
+#include "unicode.h"
+
+#include "utf8proc.h"
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +14,8 @@ struct KmView {
     KmAnchor *point;
     KmView *next;
     KmView **prev_next;
+    size_t preferred_column;
+    bool preferred_column_set;
 };
 
 struct KmBuffer {
@@ -16,12 +23,15 @@ struct KmBuffer {
     KmBuffer *base;
     KmAnchor *begv;
     KmAnchor *zv;
+    KmAnchor *mark;
     KmAnchor *saved_point;
     KmView *views;
     size_t view_count;
     size_t indirect_count;
     KmStateId saved_state;
+    KmFile *file;
     bool read_only;
+    bool mark_active;
 };
 
 typedef enum {
@@ -39,9 +49,20 @@ struct KmCommandLoop {
     KmCommandId last_command;
     bool quit_requested;
     bool exit_requested;
+    bool save_requested;
+    uint8_t *kill;
+    size_t kill_len;
+    bool has_kill;
+    uint8_t *search_query;
+    size_t search_len;
+    size_t search_cap;
+    KmBytePos search_origin;
+    bool search_active;
+    bool search_failed;
 };
 
-typedef KmStatus (*KmCommandCallback)(KmView *view, int64_t argument,
+typedef KmStatus (*KmCommandCallback)(KmCommandLoop *loop, KmView *view,
+                                      int64_t argument,
                                       KmError *error);
 
 typedef struct {
@@ -59,24 +80,45 @@ typedef struct {
 
 enum {
     KM_INTERNAL_UNIVERSAL_ARGUMENT = 100,
-    KM_INTERNAL_EXIT
+    KM_INTERNAL_EXIT,
+    KM_INTERNAL_SAVE,
+    KM_INTERNAL_SEARCH
 };
 
 #define KM_NO_KEY_NODE SIZE_MAX
 
 static const KmKeyNode key_trie[] = {
     {0, 0, KM_COMMAND_NONE, 1, KM_NO_KEY_NODE},
-    {'b', KM_MOD_CTRL, KM_COMMAND_BACKWARD_CHAR, KM_NO_KEY_NODE, 2},
-    {'d', KM_MOD_CTRL, KM_COMMAND_DELETE_CHAR, KM_NO_KEY_NODE, 3},
-    {'f', KM_MOD_CTRL, KM_COMMAND_FORWARD_CHAR, KM_NO_KEY_NODE, 4},
-    {0x7f, 0, KM_COMMAND_DELETE_BACKWARD_CHAR, KM_NO_KEY_NODE, 5},
-    {'/', KM_MOD_CTRL, KM_COMMAND_UNDO, KM_NO_KEY_NODE, 6},
-    {'x', KM_MOD_CTRL, KM_COMMAND_NONE, 8, 7},
-    {'u', KM_MOD_CTRL, KM_INTERNAL_UNIVERSAL_ARGUMENT,
-     KM_NO_KEY_NODE, KM_NO_KEY_NODE},
-    {'u', 0, KM_COMMAND_UNDO, KM_NO_KEY_NODE, 9},
-    {'r', 0, KM_COMMAND_REDO, KM_NO_KEY_NODE, 10},
+    {'a', KM_MOD_CTRL, KM_COMMAND_BEGINNING_OF_LINE, KM_NO_KEY_NODE, 2},
+    {'b', KM_MOD_CTRL, KM_COMMAND_BACKWARD_CHAR, KM_NO_KEY_NODE, 3},
+    {'d', KM_MOD_CTRL, KM_COMMAND_DELETE_CHAR, KM_NO_KEY_NODE, 4},
+    {'e', KM_MOD_CTRL, KM_COMMAND_END_OF_LINE, KM_NO_KEY_NODE, 5},
+    {'f', KM_MOD_CTRL, KM_COMMAND_FORWARD_CHAR, KM_NO_KEY_NODE, 6},
+    {'n', KM_MOD_CTRL, KM_COMMAND_NEXT_LINE, KM_NO_KEY_NODE, 7},
+    {'p', KM_MOD_CTRL, KM_COMMAND_PREVIOUS_LINE, KM_NO_KEY_NODE, 8},
+    {'w', KM_MOD_CTRL, KM_COMMAND_KILL_REGION, KM_NO_KEY_NODE, 9},
+    {'y', KM_MOD_CTRL, KM_COMMAND_YANK, KM_NO_KEY_NODE, 10},
+    {' ', KM_MOD_CTRL, KM_COMMAND_SET_MARK, KM_NO_KEY_NODE, 11},
+    {0x7f, 0, KM_COMMAND_DELETE_BACKWARD_CHAR, KM_NO_KEY_NODE, 12},
+    {'/', KM_MOD_CTRL, KM_COMMAND_UNDO, KM_NO_KEY_NODE, 13},
+    {'u', KM_MOD_CTRL, KM_INTERNAL_UNIVERSAL_ARGUMENT, KM_NO_KEY_NODE, 14},
+    {'x', KM_MOD_CTRL, KM_COMMAND_NONE, 22, 15},
+    {KM_KEY_LEFT, 0, KM_COMMAND_BACKWARD_CHAR, KM_NO_KEY_NODE, 16},
+    {KM_KEY_RIGHT, 0, KM_COMMAND_FORWARD_CHAR, KM_NO_KEY_NODE, 17},
+    {KM_KEY_UP, 0, KM_COMMAND_PREVIOUS_LINE, KM_NO_KEY_NODE, 18},
+    {KM_KEY_DOWN, 0, KM_COMMAND_NEXT_LINE, KM_NO_KEY_NODE, 19},
+    {KM_KEY_HOME, 0, KM_COMMAND_BEGINNING_OF_LINE, KM_NO_KEY_NODE, 20},
+    {KM_KEY_END, 0, KM_COMMAND_END_OF_LINE, KM_NO_KEY_NODE, 21},
+    {KM_KEY_DELETE, 0, KM_COMMAND_DELETE_CHAR, KM_NO_KEY_NODE, 27},
+    {'u', 0, KM_COMMAND_UNDO, KM_NO_KEY_NODE, 23},
+    {'r', KM_MOD_CTRL, KM_COMMAND_REDO, KM_NO_KEY_NODE, 24},
+    {'x', KM_MOD_CTRL, KM_COMMAND_EXCHANGE_POINT_AND_MARK,
+     KM_NO_KEY_NODE, 25},
+    {'s', KM_MOD_CTRL, KM_INTERNAL_SAVE, KM_NO_KEY_NODE, 26},
     {'c', KM_MOD_CTRL, KM_INTERNAL_EXIT, KM_NO_KEY_NODE, KM_NO_KEY_NODE},
+    {'k', KM_MOD_CTRL, KM_COMMAND_KILL_LINE, KM_NO_KEY_NODE, 28},
+    {'w', KM_MOD_ALT, KM_COMMAND_COPY_REGION, KM_NO_KEY_NODE, 29},
+    {'s', KM_MOD_CTRL, KM_INTERNAL_SEARCH, KM_NO_KEY_NODE, KM_NO_KEY_NODE},
 };
 
 static KmStatus fail(KmError *error, KmStatus status, const char *operation)
@@ -93,6 +135,15 @@ static bool in_accessible_range(const KmBuffer *buffer, KmBytePos point)
 {
     return point.v >= km_anchor_get(buffer->begv).v &&
            point.v <= km_anchor_get(buffer->zv).v;
+}
+
+static void reset_preferred_columns(KmBuffer *buffer)
+{
+    KmView *view;
+
+    for (view = buffer->views; view != NULL; view = view->next) {
+        view->preferred_column_set = false;
+    }
 }
 
 static KmStatus validate_view(KmView *view, bool mutable, KmBytePos *point,
@@ -141,7 +192,9 @@ static KmStatus apply_view_splice(KmView *view, KmBytePos start, KmBytePos end,
     }
     splice = (KmSplice){start, end, insert, insert_len, 0};
     meta = (KmTxnMeta){km_document_revision(view->buffer->document), command_id};
-    return km_document_apply(view->buffer->document, &splice, 1, meta, error);
+    status = km_document_apply(view->buffer->document, &splice, 1, meta, error);
+    if (status == KM_OK) reset_preferred_columns(view->buffer);
+    return status;
 }
 
 static KmStatus adjacent_boundary(const KmDocument *document, KmBytePos point,
@@ -197,7 +250,256 @@ static KmStatus move_chars(KmView *view, int64_t argument, KmError *error)
         point = next;
         --remaining;
     }
-    return km_anchor_set(view->point, point, error);
+    status = km_anchor_set(view->point, point, error);
+    if (status == KM_OK) view->preferred_column_set = false;
+    return status;
+}
+
+static KmStatus copy_accessible_text(KmBuffer *buffer, uint8_t **out_text,
+                                     size_t *out_len, size_t *out_point,
+                                     KmView *view, KmError *error)
+{
+    KmBytePos start = km_anchor_get(buffer->begv);
+    KmBytePos end = km_anchor_get(buffer->zv);
+    KmBytePos point = km_anchor_get(view->point);
+    uint8_t *text = NULL;
+    size_t len = end.v - start.v;
+    KmStatus status;
+
+    if (len != 0) {
+        text = (uint8_t *)malloc(len);
+        if (text == NULL) return fail(error, KM_ERR_OOM, "line movement");
+        status = km_document_copy(buffer->document, start, len, text, error);
+        if (status != KM_OK) {
+            free(text);
+            return status;
+        }
+    }
+    *out_text = text;
+    *out_len = len;
+    *out_point = point.v - start.v;
+    return KM_OK;
+}
+
+static size_t line_start_at(const uint8_t *text, size_t point)
+{
+    while (point != 0 && text[point - 1] != '\n') --point;
+    return point;
+}
+
+static size_t line_end_at(const uint8_t *text, size_t len, size_t point)
+{
+    while (point < len && text[point] != '\n') ++point;
+    return point;
+}
+
+static KmStatus add_column(size_t *column, size_t amount, KmError *error)
+{
+    if (*column > SIZE_MAX - amount) {
+        return fail(error, KM_ERR_INVALID, "line column");
+    }
+    *column += amount;
+    return KM_OK;
+}
+
+static KmStatus grapheme_prefix_width(const uint8_t *text, size_t end,
+                                      size_t point, size_t *out_width,
+                                      KmError *error)
+{
+    size_t scan;
+    size_t width = 0;
+
+    for (scan = 0; scan < point;) {
+        int32_t codepoint;
+        size_t consumed;
+        int codepoint_width;
+        KmStatus status = km_unicode_decode(text, end, scan, &codepoint,
+                                            &consumed, error);
+        if (status != KM_OK) return status;
+        codepoint_width = utf8proc_charwidth(codepoint);
+        if (codepoint_width > 0 && (size_t)codepoint_width > width) {
+            width = (size_t)codepoint_width;
+        }
+        scan += consumed;
+    }
+    *out_width = width;
+    return KM_OK;
+}
+
+static KmStatus line_column_at(const uint8_t *text, size_t len,
+                               size_t start, size_t point, size_t *out_column,
+                               KmError *error)
+{
+    size_t offset = start;
+    size_t column = 0;
+
+    while (offset < point) {
+        int32_t codepoint;
+        size_t consumed;
+        KmStatus status = km_unicode_decode(text, len, offset, &codepoint,
+                                            &consumed, error);
+        if (status != KM_OK) return status;
+        if (codepoint == '\t') {
+            status = add_column(&column, 8u - column % 8u, error);
+            offset += consumed;
+        } else if ((codepoint >= 0 && codepoint < 0x20) || codepoint == 0x7f) {
+            status = add_column(&column, 2, error);
+            offset += consumed;
+        } else {
+            KmGrapheme grapheme;
+            status = km_unicode_next_grapheme(text, len, offset, &grapheme,
+                                              error);
+            if (status != KM_OK) return status;
+            if (point < grapheme.end) {
+                size_t prefix;
+                status = grapheme_prefix_width(text + offset,
+                                                grapheme.end - offset,
+                                                point - offset, &prefix,
+                                                error);
+                if (status != KM_OK) return status;
+                if (prefix > grapheme.width) prefix = grapheme.width;
+                status = add_column(&column, prefix, error);
+                offset = point;
+            } else {
+                status = add_column(&column, grapheme.width, error);
+                offset = grapheme.end;
+            }
+        }
+        if (status != KM_OK) return status;
+    }
+    *out_column = column;
+    return KM_OK;
+}
+
+static KmStatus line_position_at_column(const uint8_t *text, size_t len,
+                                        size_t start, size_t end,
+                                        size_t target, size_t *out_position,
+                                        KmError *error)
+{
+    size_t offset = start;
+    size_t column = 0;
+
+    while (offset < end) {
+        int32_t codepoint;
+        size_t consumed;
+        size_t next_column;
+        size_t next_offset;
+        KmStatus status = km_unicode_decode(text, len, offset, &codepoint,
+                                            &consumed, error);
+        if (status != KM_OK) return status;
+        next_offset = offset + consumed;
+        if (codepoint == '\t') {
+            if (column > SIZE_MAX - (8u - column % 8u)) {
+                return fail(error, KM_ERR_INVALID, "line column");
+            }
+            next_column = column + (8u - column % 8u);
+        } else if ((codepoint >= 0 && codepoint < 0x20) || codepoint == 0x7f) {
+            if (column > SIZE_MAX - 2) {
+                return fail(error, KM_ERR_INVALID, "line column");
+            }
+            next_column = column + 2;
+        } else {
+            KmGrapheme grapheme;
+            status = km_unicode_next_grapheme(text, len, offset, &grapheme,
+                                              error);
+            if (status != KM_OK) return status;
+            next_offset = grapheme.end;
+            if (column > SIZE_MAX - grapheme.width) {
+                return fail(error, KM_ERR_INVALID, "line column");
+            }
+            next_column = column + grapheme.width;
+        }
+        if (next_column > target) break;
+        column = next_column;
+        offset = next_offset;
+    }
+    *out_position = offset;
+    return KM_OK;
+}
+
+static KmStatus move_vertical(KmView *view, int64_t argument, KmError *error)
+{
+    KmBytePos point;
+    KmBytePos start;
+    KmBytePos end;
+    uint8_t *text = NULL;
+    size_t len;
+    size_t position;
+    size_t preferred;
+    uint64_t remaining = command_magnitude(argument);
+    bool backward = argument < 0;
+    KmStatus status = validate_view(view, false, &point, &start, &end, error);
+
+    if (status != KM_OK) return status;
+    status = copy_accessible_text(view->buffer, &text, &len, &position, view,
+                                  error);
+    if (status != KM_OK) return status;
+    if (view->preferred_column_set) {
+        preferred = view->preferred_column;
+    } else {
+        status = line_column_at(text, len, line_start_at(text, position),
+                                position, &preferred, error);
+        if (status != KM_OK) goto done;
+    }
+    while (remaining != 0) {
+        size_t current_start = line_start_at(text, position);
+        size_t target_start;
+        size_t target_end;
+
+        if (backward) {
+            if (current_start == 0) {
+                status = fail(error, KM_ERR_INVALID, "move lines");
+                goto done;
+            }
+            target_end = current_start - 1;
+            target_start = line_start_at(text, target_end);
+        } else {
+            size_t current_end = line_end_at(text, len, position);
+            if (current_end == len) {
+                status = fail(error, KM_ERR_INVALID, "move lines");
+                goto done;
+            }
+            target_start = current_end + 1;
+            target_end = line_end_at(text, len, target_start);
+        }
+        status = line_position_at_column(text, len, target_start, target_end,
+                                         preferred, &position, error);
+        if (status != KM_OK) goto done;
+        --remaining;
+    }
+    status = km_anchor_set(view->point, (KmBytePos){start.v + position}, error);
+    if (status == KM_OK) {
+        view->preferred_column = preferred;
+        view->preferred_column_set = true;
+    }
+
+done:
+    free(text);
+    return status;
+}
+
+static KmStatus move_line_edge(KmView *view, bool to_end, KmError *error)
+{
+    KmBytePos point;
+    KmBytePos start;
+    KmBytePos end;
+    uint8_t *text = NULL;
+    size_t len;
+    size_t position;
+    KmStatus status = validate_view(view, false, &point, &start, &end, error);
+
+    if (status != KM_OK) return status;
+    status = copy_accessible_text(view->buffer, &text, &len, &position, view,
+                                  error);
+    if (status == KM_OK) {
+        position = to_end ? line_end_at(text, len, position)
+                          : line_start_at(text, position);
+        status = km_anchor_set(view->point,
+                               (KmBytePos){start.v + position}, error);
+        if (status == KM_OK) view->preferred_column_set = false;
+    }
+    free(text);
+    return status;
 }
 
 static KmStatus delete_chars(KmView *view, int64_t argument,
@@ -287,6 +589,7 @@ static void clamp_points(KmBuffer *buffer, KmBytePos start, KmBytePos end)
     KmView *view;
 
     clamp_anchor(buffer->saved_point, start, end);
+    clamp_anchor(buffer->mark, start, end);
     for (view = buffer->views; view != NULL; view = view->next) {
         clamp_anchor(view->point, start, end);
     }
@@ -295,6 +598,7 @@ static void clamp_points(KmBuffer *buffer, KmBytePos start, KmBytePos end)
 static void destroy_anchors(KmBuffer *buffer)
 {
     km_anchor_destroy(buffer->saved_point);
+    km_anchor_destroy(buffer->mark);
     km_anchor_destroy(buffer->zv);
     km_anchor_destroy(buffer->begv);
 }
@@ -315,10 +619,21 @@ static KmStatus create_buffer_anchors(KmBuffer *buffer, KmError *error)
         return status;
     }
     status = km_anchor_create(buffer->document, (KmBytePos){0},
-                              KM_ANCHOR_AFTER, &buffer->saved_point, error);
+                              KM_ANCHOR_BEFORE, &buffer->mark, error);
     if (status != KM_OK) {
         km_anchor_destroy(buffer->zv);
         km_anchor_destroy(buffer->begv);
+        buffer->zv = NULL;
+        buffer->begv = NULL;
+        return status;
+    }
+    status = km_anchor_create(buffer->document, (KmBytePos){0},
+                              KM_ANCHOR_AFTER, &buffer->saved_point, error);
+    if (status != KM_OK) {
+        km_anchor_destroy(buffer->mark);
+        km_anchor_destroy(buffer->zv);
+        km_anchor_destroy(buffer->begv);
+        buffer->mark = NULL;
         buffer->zv = NULL;
         buffer->begv = NULL;
     }
@@ -383,6 +698,20 @@ KmStatus km_buffer_create_indirect(KmBuffer *base, KmBuffer **out_buffer,
     return KM_OK;
 }
 
+KmStatus km_buffer_create_file(KmFile *file, const uint8_t *text, size_t len,
+                               KmBuffer **out_buffer, KmError *error)
+{
+    KmBuffer *buffer = NULL;
+    KmStatus status;
+
+    if (file == NULL) return fail(error, KM_ERR_INVALID, "file buffer create");
+    status = km_buffer_create_base(text, len, &buffer, error);
+    if (status != KM_OK) return status;
+    buffer->file = file;
+    *out_buffer = buffer;
+    return KM_OK;
+}
+
 KmStatus km_buffer_destroy(KmBuffer *buffer, KmError *error)
 {
     km_error_clear(error);
@@ -394,6 +723,7 @@ KmStatus km_buffer_destroy(KmBuffer *buffer, KmError *error)
     if (buffer->base != NULL) {
         --buffer->base->indirect_count;
     } else {
+        km_file_destroy(buffer->file);
         km_document_destroy(buffer->document);
     }
     free(buffer);
@@ -461,6 +791,46 @@ bool km_buffer_is_modified(const KmBuffer *buffer)
     if (buffer == NULL) return false;
     base = buffer->base == NULL ? buffer : buffer->base;
     return km_document_history_state(base->document) != base->saved_state;
+}
+
+bool km_buffer_is_visited(const KmBuffer *buffer)
+{
+    return buffer != NULL && buffer->base == NULL && buffer->file != NULL;
+}
+
+KmStatus km_buffer_save(KmBuffer *buffer, KmError *error)
+{
+    KmStateId state;
+    KmStatus status;
+
+    km_error_clear(error);
+    if (buffer == NULL || buffer->base != NULL || buffer->file == NULL) {
+        return fail(error, KM_ERR_UNSUPPORTED, "save buffer");
+    }
+    state = km_document_history_state(buffer->document);
+    status = km_file_save(buffer->file, buffer->document, error);
+    if (status == KM_OK && km_document_history_state(buffer->document) == state) {
+        buffer->saved_state = state;
+    }
+    return status;
+}
+
+const char *km_buffer_name(const KmBuffer *buffer)
+{
+    if (buffer == NULL) return "";
+    if (buffer->base != NULL) buffer = buffer->base;
+    return buffer->file == NULL ? "*scratch*"
+                                : km_file_display_name(buffer->file);
+}
+
+bool km_buffer_mark_active(const KmBuffer *buffer)
+{
+    return buffer != NULL && buffer->mark_active;
+}
+
+KmBytePos km_buffer_mark(const KmBuffer *buffer)
+{
+    return buffer == NULL ? (KmBytePos){0} : km_anchor_get(buffer->mark);
 }
 
 KmStatus km_view_create(KmBuffer *buffer, KmView **out_view, KmError *error)
@@ -553,6 +923,26 @@ KmStatus km_view_delete_backward_char(KmView *view, KmError *error)
     return delete_chars(view, -1, KM_COMMAND_DELETE_BACKWARD_CHAR, error);
 }
 
+KmStatus km_view_beginning_of_line(KmView *view, KmError *error)
+{
+    return move_line_edge(view, false, error);
+}
+
+KmStatus km_view_end_of_line(KmView *view, KmError *error)
+{
+    return move_line_edge(view, true, error);
+}
+
+KmStatus km_view_next_line(KmView *view, KmError *error)
+{
+    return move_vertical(view, 1, error);
+}
+
+KmStatus km_view_previous_line(KmView *view, KmError *error)
+{
+    return move_vertical(view, -1, error);
+}
+
 KmStatus km_view_undo(KmView *view, KmError *error)
 {
     KmBytePos point;
@@ -564,9 +954,11 @@ KmStatus km_view_undo(KmView *view, KmError *error)
     if (!km_document_can_undo_in_range(view->buffer->document, start, end)) {
         return fail(error, KM_ERR_INVALID, "view undo");
     }
-    return km_document_undo(view->buffer->document,
-                            km_document_revision(view->buffer->document),
-                            error);
+    status = km_document_undo(view->buffer->document,
+                              km_document_revision(view->buffer->document),
+                              error);
+    if (status == KM_OK) reset_preferred_columns(view->buffer);
+    return status;
 }
 
 KmStatus km_view_redo(KmView *view, KmError *error)
@@ -580,46 +972,271 @@ KmStatus km_view_redo(KmView *view, KmError *error)
     if (!km_document_can_redo_in_range(view->buffer->document, start, end)) {
         return fail(error, KM_ERR_INVALID, "view redo");
     }
-    return km_document_redo(view->buffer->document,
-                            km_document_revision(view->buffer->document),
-                            error);
+    status = km_document_redo(view->buffer->document,
+                              km_document_revision(view->buffer->document),
+                              error);
+    if (status == KM_OK) reset_preferred_columns(view->buffer);
+    return status;
 }
 
-static KmStatus command_forward(KmView *view, int64_t argument,
+static KmStatus command_forward(KmCommandLoop *loop, KmView *view,
+                                int64_t argument,
                                 KmError *error)
 {
+    (void)loop;
     return move_chars(view, argument, error);
 }
 
-static KmStatus command_backward(KmView *view, int64_t argument,
+static KmStatus command_backward(KmCommandLoop *loop, KmView *view,
+                                 int64_t argument,
                                  KmError *error)
 {
+    (void)loop;
     return move_chars(view, -argument, error);
 }
 
-static KmStatus command_delete(KmView *view, int64_t argument,
+static KmStatus command_delete(KmCommandLoop *loop, KmView *view,
+                               int64_t argument,
                                KmError *error)
 {
+    (void)loop;
     return delete_chars(view, argument, KM_COMMAND_DELETE_CHAR, error);
 }
 
-static KmStatus command_delete_backward(KmView *view, int64_t argument,
+static KmStatus command_delete_backward(KmCommandLoop *loop, KmView *view,
+                                        int64_t argument,
                                         KmError *error)
 {
+    (void)loop;
     return delete_chars(view, -argument,
                         KM_COMMAND_DELETE_BACKWARD_CHAR, error);
 }
 
-static KmStatus command_undo(KmView *view, int64_t argument, KmError *error)
+static KmStatus command_line_edge(KmView *view, int64_t argument, bool to_end,
+                                  KmError *error)
 {
+    if (argument != 1) return fail(error, KM_ERR_INVALID, "line argument");
+    return move_line_edge(view, to_end, error);
+}
+
+static KmStatus command_beginning_of_line(KmCommandLoop *loop, KmView *view,
+                                          int64_t argument, KmError *error)
+{
+    (void)loop;
+    return command_line_edge(view, argument, false, error);
+}
+
+static KmStatus command_end_of_line(KmCommandLoop *loop, KmView *view,
+                                    int64_t argument, KmError *error)
+{
+    (void)loop;
+    return command_line_edge(view, argument, true, error);
+}
+
+static KmStatus command_next_line(KmCommandLoop *loop, KmView *view,
+                                  int64_t argument, KmError *error)
+{
+    (void)loop;
+    return move_vertical(view, argument, error);
+}
+
+static KmStatus command_previous_line(KmCommandLoop *loop, KmView *view,
+                                      int64_t argument, KmError *error)
+{
+    (void)loop;
+    return move_vertical(view, -argument, error);
+}
+
+static KmStatus command_set_mark(KmCommandLoop *loop, KmView *view,
+                                 int64_t argument, KmError *error)
+{
+    KmStatus status;
+
+    (void)loop;
+    if (argument != 1) return fail(error, KM_ERR_INVALID, "mark argument");
+    status = km_anchor_set(view->buffer->mark, km_anchor_get(view->point), error);
+    if (status == KM_OK) view->buffer->mark_active = true;
+    return status;
+}
+
+static KmStatus command_exchange_mark(KmCommandLoop *loop, KmView *view,
+                                      int64_t argument, KmError *error)
+{
+    KmBytePos point;
+    KmBytePos mark;
+    KmStatus status;
+
+    (void)loop;
+    if (argument != 1 || !view->buffer->mark_active) {
+        return fail(error, KM_ERR_INVALID, "exchange point and mark");
+    }
+    point = km_anchor_get(view->point);
+    mark = km_anchor_get(view->buffer->mark);
+    status = km_anchor_set(view->point, mark, error);
+    if (status != KM_OK) return status;
+    status = km_anchor_set(view->buffer->mark, point, error);
+    if (status != KM_OK) {
+        (void)km_anchor_set(view->point, point, NULL);
+        return status;
+    }
+    view->preferred_column_set = false;
+    return KM_OK;
+}
+
+static KmStatus region_bounds(KmView *view, KmBytePos *out_start,
+                              KmBytePos *out_end, KmError *error)
+{
+    KmBytePos point;
+    KmBytePos start;
+    KmBytePos end;
+    KmBytePos mark;
+    KmStatus status = validate_view(view, false, &point, &start, &end, error);
+
+    if (status != KM_OK) return status;
+    if (!view->buffer->mark_active) {
+        return fail(error, KM_ERR_INVALID, "region inactive");
+    }
+    mark = km_anchor_get(view->buffer->mark);
+    if (mark.v < start.v || mark.v > end.v || mark.v == point.v) {
+        return fail(error, KM_ERR_INVALID, "region inactive");
+    }
+    *out_start = mark.v < point.v ? mark : point;
+    *out_end = mark.v < point.v ? point : mark;
+    return KM_OK;
+}
+
+static KmStatus command_kill_region(KmCommandLoop *loop, KmView *view,
+                                    int64_t argument, KmError *error)
+{
+    KmBytePos start;
+    KmBytePos end;
+    uint8_t *copy;
+    size_t len;
+    KmStatus status;
+
+    if (argument != 1) return fail(error, KM_ERR_INVALID, "kill argument");
+    status = region_bounds(view, &start, &end, error);
+    if (status != KM_OK) return status;
+    if (view->buffer->read_only) {
+        return fail(error, KM_ERR_PERMISSION, "kill region");
+    }
+    len = end.v - start.v;
+    copy = (uint8_t *)malloc(len);
+    if (copy == NULL) return fail(error, KM_ERR_OOM, "kill region");
+    status = km_document_copy(view->buffer->document, start, len, copy, error);
+    if (status == KM_OK) {
+        status = apply_view_splice(view, start, end, NULL, 0,
+                                   KM_COMMAND_KILL_REGION, error);
+    }
+    if (status != KM_OK) {
+        free(copy);
+        return status;
+    }
+    free(loop->kill);
+    loop->kill = copy;
+    loop->kill_len = len;
+    loop->has_kill = true;
+    view->buffer->mark_active = false;
+    return KM_OK;
+}
+
+static KmStatus command_copy_region(KmCommandLoop *loop, KmView *view,
+                                    int64_t argument, KmError *error)
+{
+    KmBytePos start;
+    KmBytePos end;
+    uint8_t *copy;
+    size_t len;
+    KmStatus status;
+
+    if (argument != 1) return fail(error, KM_ERR_INVALID, "copy argument");
+    status = region_bounds(view, &start, &end, error);
+    if (status != KM_OK) return status;
+    len = end.v - start.v;
+    copy = (uint8_t *)malloc(len);
+    if (copy == NULL) return fail(error, KM_ERR_OOM, "copy region");
+    status = km_document_copy(view->buffer->document, start, len, copy, error);
+    if (status != KM_OK) {
+        free(copy);
+        return status;
+    }
+    free(loop->kill);
+    loop->kill = copy;
+    loop->kill_len = len;
+    loop->has_kill = true;
+    return KM_OK;
+}
+
+static KmStatus command_kill_line(KmCommandLoop *loop, KmView *view,
+                                  int64_t argument, KmError *error)
+{
+    KmBytePos point;
+    KmBytePos start;
+    KmBytePos end;
+    uint8_t *text = NULL;
+    size_t len;
+    size_t position;
+    size_t line_end;
+    uint8_t *copy;
+    size_t kill_len;
+    KmStatus status;
+
+    if (argument != 1) return fail(error, KM_ERR_INVALID, "kill line argument");
+    status = validate_view(view, true, &point, &start, &end, error);
+    if (status != KM_OK) return status;
+    status = copy_accessible_text(view->buffer, &text, &len, &position, view,
+                                  error);
+    if (status != KM_OK) return status;
+    line_end = line_end_at(text, len, position);
+    if (line_end == position && line_end < len) ++line_end;
+    if (line_end == position) {
+        free(text);
+        return fail(error, KM_ERR_INVALID, "kill line");
+    }
+    kill_len = line_end - position;
+    copy = (uint8_t *)malloc(kill_len);
+    if (copy == NULL) {
+        free(text);
+        return fail(error, KM_ERR_OOM, "kill line");
+    }
+    memcpy(copy, text + position, kill_len);
+    free(text);
+    status = apply_view_splice(view, point,
+                               (KmBytePos){point.v + kill_len}, NULL, 0,
+                               KM_COMMAND_KILL_LINE, error);
+    if (status != KM_OK) {
+        free(copy);
+        return status;
+    }
+    free(loop->kill);
+    loop->kill = copy;
+    loop->kill_len = kill_len;
+    loop->has_kill = true;
+    return KM_OK;
+}
+
+static KmStatus command_yank(KmCommandLoop *loop, KmView *view,
+                             int64_t argument, KmError *error)
+{
+    if (!loop->has_kill) return fail(error, KM_ERR_INVALID, "kill ring empty");
+    return insert_utf8_repeated(view, loop->kill, loop->kill_len, argument,
+                                KM_COMMAND_YANK, error);
+}
+
+static KmStatus command_undo(KmCommandLoop *loop, KmView *view,
+                             int64_t argument, KmError *error)
+{
+    (void)loop;
     if (argument != 1) {
         return fail(error, KM_ERR_INVALID, "undo argument");
     }
     return km_view_undo(view, error);
 }
 
-static KmStatus command_redo(KmView *view, int64_t argument, KmError *error)
+static KmStatus command_redo(KmCommandLoop *loop, KmView *view,
+                             int64_t argument, KmError *error)
 {
+    (void)loop;
     if (argument != 1) {
         return fail(error, KM_ERR_INVALID, "redo argument");
     }
@@ -631,6 +1248,16 @@ static const KmCommandSpec command_registry[] = {
     {KM_COMMAND_BACKWARD_CHAR, command_backward},
     {KM_COMMAND_DELETE_CHAR, command_delete},
     {KM_COMMAND_DELETE_BACKWARD_CHAR, command_delete_backward},
+    {KM_COMMAND_BEGINNING_OF_LINE, command_beginning_of_line},
+    {KM_COMMAND_END_OF_LINE, command_end_of_line},
+    {KM_COMMAND_NEXT_LINE, command_next_line},
+    {KM_COMMAND_PREVIOUS_LINE, command_previous_line},
+    {KM_COMMAND_SET_MARK, command_set_mark},
+    {KM_COMMAND_EXCHANGE_POINT_AND_MARK, command_exchange_mark},
+    {KM_COMMAND_KILL_REGION, command_kill_region},
+    {KM_COMMAND_COPY_REGION, command_copy_region},
+    {KM_COMMAND_KILL_LINE, command_kill_line},
+    {KM_COMMAND_YANK, command_yank},
     {KM_COMMAND_UNDO, command_undo},
     {KM_COMMAND_REDO, command_redo},
 };
@@ -650,6 +1277,12 @@ static bool valid_scalar(uint32_t codepoint)
            !(codepoint >= 0xd800u && codepoint <= 0xdfffu);
 }
 
+static bool valid_key_code(uint32_t codepoint)
+{
+    return valid_scalar(codepoint) ||
+           (codepoint >= KM_KEY_ESCAPE && codepoint <= KM_KEY_DELETE);
+}
+
 static KmStatus validate_event(const KmEvent *event, KmError *error)
 {
     const uint32_t known_modifiers = KM_MOD_CTRL | KM_MOD_ALT | KM_MOD_SHIFT;
@@ -660,7 +1293,7 @@ static KmStatus validate_event(const KmEvent *event, KmError *error)
         return fail(error, KM_ERR_INVALID, "command event");
     }
     if (event->kind == KM_EVENT_KEY) {
-        if (event->repeat == 0 || !valid_scalar(event->codepoint) ||
+        if (event->repeat == 0 || !valid_key_code(event->codepoint) ||
             event->text != NULL || event->text_len != 0) {
             return fail(error, KM_ERR_INVALID, "key event");
         }
@@ -784,7 +1417,7 @@ static KmStatus execute_registered_command(KmCommandLoop *loop, KmView *view,
     if (command == NULL) {
         return fail(error, KM_ERR_INVALID, "command registry");
     }
-    status = command->callback(view, argument, error);
+    status = command->callback(loop, view, argument, error);
     if (status == KM_OK) loop->last_command = id;
     return status;
 }
@@ -828,6 +1461,158 @@ static KmStatus dispatch_text(KmCommandLoop *loop, KmView *view,
     return status;
 }
 
+static bool valid_utf8_block(const uint8_t *text, size_t len)
+{
+    size_t offset = 0;
+
+    if (len != 0 && text == NULL) return false;
+    while (offset < len) {
+        int32_t codepoint;
+        size_t consumed;
+        if (km_unicode_decode(text, len, offset, &codepoint, &consumed, NULL) !=
+            KM_OK) {
+            return false;
+        }
+        offset += consumed;
+    }
+    return true;
+}
+
+static KmStatus search_from(KmCommandLoop *loop, KmView *view,
+                            size_t start, KmError *error)
+{
+    const KmDocument *document = view->buffer->document;
+    KmBytePos begv = km_anchor_get(view->buffer->begv);
+    KmBytePos zv = km_anchor_get(view->buffer->zv);
+    uint8_t *text;
+    size_t len = zv.v - begv.v;
+    size_t relative_start = start < begv.v ? 0 : start - begv.v;
+    size_t found = SIZE_MAX;
+
+    if (loop->search_len == 0) {
+        loop->search_failed = false;
+        return km_anchor_set(view->point, loop->search_origin, error);
+    }
+    text = len == 0 ? NULL : (uint8_t *)malloc(len);
+    if (len != 0 && text == NULL) return fail(error, KM_ERR_OOM, "search");
+    if (len != 0) {
+        KmStatus status = km_document_copy(document, begv, len, text, error);
+        if (status != KM_OK) {
+            free(text);
+            return status;
+        }
+    }
+    if (relative_start > len) relative_start = len;
+    /* ponytail: byte scan; add a search index only after profiling demands it. */
+    for (size_t pass = 0; pass < 2 && found == SIZE_MAX; ++pass) {
+        size_t scan = pass == 0 ? relative_start : 0;
+        size_t limit = pass == 0 ? len : relative_start;
+
+        while (scan <= limit && loop->search_len <= len - scan) {
+            KmBytePos candidate = {begv.v + scan};
+            KmBytePos candidate_end = {candidate.v + loop->search_len};
+            if (candidate_end.v <= zv.v &&
+                km_document_is_boundary(document, candidate) &&
+                km_document_is_boundary(document, candidate_end) &&
+                memcmp(text + scan, loop->search_query,
+                       loop->search_len) == 0) {
+                found = scan;
+                break;
+            }
+            ++scan;
+        }
+    }
+    free(text);
+    loop->search_failed = found == SIZE_MAX;
+    if (found == SIZE_MAX) return KM_OK;
+    return km_anchor_set(view->point, (KmBytePos){begv.v + found}, error);
+}
+
+static KmStatus append_search_query(KmCommandLoop *loop, KmView *view,
+                                    const uint8_t *text, size_t len,
+                                    KmError *error)
+{
+    size_t required;
+    size_t capacity;
+    uint8_t *query;
+
+    if (!valid_utf8_block(text, len) || len > SIZE_MAX - loop->search_len) {
+        return fail(error, KM_ERR_INVALID, "search text");
+    }
+    required = loop->search_len + len;
+    if (required > loop->search_cap) {
+        capacity = loop->search_cap == 0 ? 32 : loop->search_cap;
+        while (capacity < required) {
+            if (capacity > SIZE_MAX / 2) {
+                capacity = required;
+                break;
+            }
+            capacity *= 2;
+        }
+        query = (uint8_t *)realloc(loop->search_query, capacity);
+        if (query == NULL) return fail(error, KM_ERR_OOM, "search text");
+        loop->search_query = query;
+        loop->search_cap = capacity;
+    }
+    if (len != 0) memcpy(loop->search_query + loop->search_len, text, len);
+    loop->search_len = required;
+    return search_from(loop, view, loop->search_origin.v, error);
+}
+
+static KmStatus search_backspace(KmCommandLoop *loop, KmView *view,
+                                 KmError *error)
+{
+    if (loop->search_len == 0) return KM_OK;
+    --loop->search_len;
+    while (loop->search_len != 0 &&
+           (loop->search_query[loop->search_len] & 0xc0u) == 0x80u) {
+        --loop->search_len;
+    }
+    return search_from(loop, view, loop->search_origin.v, error);
+}
+
+static KmStatus dispatch_search(KmCommandLoop *loop, KmView *view,
+                                const KmEvent *event, KmError *error)
+{
+    if (event->kind == KM_EVENT_KEY &&
+        is_quit_key(event->codepoint, event->modifiers)) {
+        KmStatus status = km_anchor_set(view->point, loop->search_origin, error);
+        loop->search_active = false;
+        loop->search_failed = false;
+        view->buffer->mark_active = false;
+        loop->quit_requested = true;
+        return status;
+    }
+    if (event->kind == KM_EVENT_KEY && event->codepoint == 's' &&
+        event->modifiers == KM_MOD_CTRL) {
+        size_t start = km_anchor_get(view->point).v;
+        if (start < km_anchor_get(view->buffer->zv).v) ++start;
+        return search_from(loop, view, start, error);
+    }
+    if (event->kind == KM_EVENT_KEY && event->codepoint == 0x7f &&
+        event->modifiers == 0) {
+        return search_backspace(loop, view, error);
+    }
+    if (event->kind == KM_EVENT_TEXT && event->text == NULL &&
+        event->text_len == 0 && event->codepoint == '\n') {
+        loop->search_active = false;
+        loop->search_failed = false;
+        loop->last_command = KM_COMMAND_SEARCH_FORWARD;
+        return KM_OK;
+    }
+    if (event->kind == KM_EVENT_TEXT) {
+        if (event->text != NULL || event->text_len != 0) {
+            return append_search_query(loop, view, event->text, event->text_len,
+                                       error);
+        } else {
+            uint8_t bytes[4];
+            size_t len = encode_scalar(event->codepoint, bytes);
+            return append_search_query(loop, view, bytes, len, error);
+        }
+    }
+    return fail(error, KM_ERR_INVALID, "search key");
+}
+
 static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
                              const KmEvent *event, KmError *error)
 {
@@ -835,6 +1620,11 @@ static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
     uint32_t modifiers;
     size_t node;
 
+    if (loop->search_active && event->kind != KM_EVENT_RESIZE &&
+        event->kind != KM_EVENT_FOCUS && event->kind != KM_EVENT_MOUSE &&
+        event->kind != KM_EVENT_EOF) {
+        return dispatch_search(loop, view, event, error);
+    }
     if (event->kind == KM_EVENT_RESIZE || event->kind == KM_EVENT_FOCUS ||
         event->kind == KM_EVENT_MOUSE || event->kind == KM_EVENT_EOF) {
         return KM_OK;
@@ -869,6 +1659,7 @@ static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
     modifiers = event->modifiers;
     if (is_quit_key(codepoint, modifiers)) {
         reset_command_input(loop);
+        view->buffer->mark_active = false;
         loop->quit_requested = true;
         return KM_OK;
     }
@@ -910,6 +1701,19 @@ static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
         loop->exit_requested = true;
         return KM_OK;
     }
+    if (key_trie[node].command == KM_INTERNAL_SAVE) {
+        reset_command_input(loop);
+        loop->save_requested = true;
+        return KM_OK;
+    }
+    if (key_trie[node].command == KM_INTERNAL_SEARCH) {
+        reset_command_input(loop);
+        loop->search_origin = km_anchor_get(view->point);
+        loop->search_len = 0;
+        loop->search_active = true;
+        loop->search_failed = false;
+        return KM_OK;
+    }
     return execute_registered_command(
         loop, view, (KmCommandId)key_trie[node].command, error);
 }
@@ -933,6 +1737,10 @@ KmStatus km_command_loop_create(KmCommandLoop **out_loop, KmError *error)
 
 void km_command_loop_destroy(KmCommandLoop *loop)
 {
+    if (loop != NULL) {
+        free(loop->search_query);
+        free(loop->kill);
+    }
     free(loop);
 }
 
@@ -980,4 +1788,58 @@ void km_command_loop_clear_quit(KmCommandLoop *loop)
 bool km_command_loop_exit_requested(const KmCommandLoop *loop)
 {
     return loop != NULL && loop->exit_requested;
+}
+
+bool km_command_loop_save_requested(const KmCommandLoop *loop)
+{
+    return loop != NULL && loop->save_requested;
+}
+
+void km_command_loop_clear_save(KmCommandLoop *loop)
+{
+    if (loop != NULL) loop->save_requested = false;
+}
+
+void km_command_loop_clear_exit(KmCommandLoop *loop)
+{
+    if (loop != NULL) loop->exit_requested = false;
+}
+
+bool km_command_loop_search_active(const KmCommandLoop *loop)
+{
+    return loop != NULL && loop->search_active;
+}
+
+void km_command_loop_format_prompt(const KmCommandLoop *loop,
+                                   char *destination, size_t capacity)
+{
+    const char *prefix;
+    size_t used;
+    size_t offset = 0;
+
+    if (destination == NULL || capacity == 0) return;
+    destination[0] = '\0';
+    if (loop == NULL || !loop->search_active) return;
+    prefix = loop->search_failed ? "Failing I-search: " : "I-search: ";
+    used = strlen(prefix);
+    if (used >= capacity) return;
+    memcpy(destination, prefix, used);
+    while (offset < loop->search_len) {
+        int32_t codepoint;
+        size_t consumed;
+        if (km_unicode_decode(loop->search_query, loop->search_len, offset,
+                              &codepoint, &consumed, NULL) != KM_OK) {
+            break;
+        }
+        if (codepoint < 0x20 || codepoint == 0x7f) {
+            if (used + 1 >= capacity) break;
+            destination[used++] = '?';
+        } else {
+            if (consumed > capacity - used - 1) break;
+            memcpy(destination + used, loop->search_query + offset, consumed);
+            used += consumed;
+        }
+        offset += consumed;
+    }
+    destination[used] = '\0';
 }

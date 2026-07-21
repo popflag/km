@@ -1,5 +1,7 @@
 #include "layout.h"
 
+#include "unicode.h"
+
 #include "utf8proc.h"
 
 #include <stdio.h>
@@ -21,8 +23,12 @@ typedef struct {
     size_t cursor_hard_column;
     size_t scroll_row;
     size_t content_rows;
+    size_t region_start;
+    size_t region_end;
+    uint16_t style_id;
     KmCellGrid *grid;
     bool cursor_set;
+    bool region_active;
 } KmLayoutPass;
 
 static KmStatus fail(KmError *error, KmStatus status, const char *operation)
@@ -72,9 +78,18 @@ static KmStatus draw_glyph(KmLayoutPass *pass, const uint8_t *glyph,
     if (pass->grid != NULL && pass->row >= pass->scroll_row &&
         pass->row - pass->scroll_row < pass->content_rows) {
         return km_cell_grid_put(pass->grid, pass->row - pass->scroll_row,
-                                pass->column, glyph, glyph_len, width, 0, error);
+                                pass->column, glyph, glyph_len, width,
+                                pass->style_id, error);
     }
     return KM_OK;
+}
+
+static void select_region_style(KmLayoutPass *pass, size_t start, size_t end)
+{
+    pass->style_id = pass->region_active && start < pass->region_end &&
+                             end > pass->region_start
+                         ? KM_STYLE_REGION
+                         : KM_STYLE_DEFAULT;
 }
 
 static KmStatus draw_ascii_cell(KmLayoutPass *pass, uint8_t glyph,
@@ -107,76 +122,6 @@ static KmStatus draw_control(KmLayoutPass *pass, utf8proc_int32_t codepoint,
     return draw_ascii_cell(pass, second, error);
 }
 
-static KmStatus decode_one(const uint8_t *text, size_t len, size_t offset,
-                           utf8proc_int32_t *codepoint, size_t *consumed,
-                           KmError *error)
-{
-    utf8proc_ssize_t count = utf8proc_iterate(
-        text + offset, (utf8proc_ssize_t)(len - offset), codepoint);
-
-    if (count <= 0) return fail(error, KM_ERR_INVALID, "layout UTF-8");
-    *consumed = (size_t)count;
-    return KM_OK;
-}
-
-static KmStatus next_grapheme(const uint8_t *text, size_t len, size_t start,
-                              size_t *out_end, uint8_t *out_width,
-                              bool *out_combining_only,
-                              KmError *error)
-{
-    utf8proc_int32_t previous;
-    utf8proc_int32_t state = 0;
-    size_t consumed;
-    size_t end;
-    size_t scan;
-    int width = 0;
-    bool force_wide = false;
-    bool force_narrow = false;
-    size_t regional_indicators = 0;
-    KmStatus status = decode_one(text, len, start, &previous, &consumed, error);
-
-    if (status != KM_OK) return status;
-    end = start + consumed;
-    while (end < len) {
-        utf8proc_int32_t next;
-        status = decode_one(text, len, end, &next, &consumed, error);
-        if (status != KM_OK) return status;
-        if (utf8proc_grapheme_break_stateful(previous, next, &state)) break;
-        previous = next;
-        end += consumed;
-    }
-    scan = start;
-    while (scan < end) {
-        utf8proc_int32_t codepoint;
-        int codepoint_width;
-        status = decode_one(text, end, scan, &codepoint, &consumed, error);
-        if (status != KM_OK) return status;
-        codepoint_width = utf8proc_charwidth(codepoint);
-        if (codepoint_width > width) width = codepoint_width;
-        if (codepoint == 0x200d || codepoint == 0xfe0f) {
-            force_wide = true;
-        }
-        if (codepoint >= 0x1f1e6 && codepoint <= 0x1f1ff) {
-            ++regional_indicators;
-        }
-        if (codepoint == 0xfe0e) force_narrow = true;
-        scan += consumed;
-    }
-    *out_combining_only = width < 1;
-    if (force_narrow) {
-        width = 1;
-    } else if (force_wide || regional_indicators >= 2) {
-        width = 2;
-    } else if (width < 1) {
-        width = 1;
-    } else if (width > 2) {
-        width = 2;
-    }
-    *out_end = end;
-    *out_width = (uint8_t)width;
-    return KM_OK;
-}
-
 static KmStatus record_inside_grapheme(KmLayoutPass *pass, size_t start,
                                        size_t end, uint8_t width,
                                        KmError *error)
@@ -188,8 +133,8 @@ static KmStatus record_inside_grapheme(KmLayoutPass *pass, size_t start,
         utf8proc_int32_t codepoint;
         size_t consumed;
         int codepoint_width;
-        KmStatus status = decode_one(pass->text, end, scan, &codepoint,
-                                     &consumed, error);
+        KmStatus status = km_unicode_decode(pass->text, end, scan, &codepoint,
+                                            &consumed, error);
         if (status != KM_OK) return status;
         codepoint_width = utf8proc_charwidth(codepoint);
         if (codepoint_width > 0 && (size_t)codepoint_width > prefix_width) {
@@ -220,8 +165,8 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
     while (offset < pass->len) {
         utf8proc_int32_t codepoint;
         size_t consumed;
-        KmStatus status = decode_one(pass->text, pass->len, offset,
-                                     &codepoint, &consumed, error);
+        KmStatus status = km_unicode_decode(pass->text, pass->len, offset,
+                                            &codepoint, &consumed, error);
         if (status != KM_OK) return status;
         if (codepoint == '\n') {
             bool already_wrapped = pass->column == pass->columns;
@@ -239,6 +184,7 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
         } else if (codepoint == '\t') {
             size_t spaces;
             record_cursor(pass, offset, pass->row, pass->column);
+            select_region_style(pass, offset, offset + consumed);
             spaces = 8u - (pass->hard_column % 8u);
             while (spaces-- != 0) {
                 status = draw_ascii_cell(pass, ' ', error);
@@ -248,11 +194,13 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
             record_cursor(pass, offset, pass->row, pass->column);
         } else if (is_ascii_control(codepoint)) {
             record_cursor(pass, offset, pass->row, pass->column);
+            select_region_style(pass, offset, offset + consumed);
             status = draw_control(pass, codepoint, error);
             if (status != KM_OK) return status;
             offset += consumed;
             record_cursor(pass, offset, pass->row, pass->column);
         } else {
+            KmGrapheme grapheme;
             size_t end;
             uint8_t width;
             const uint8_t *glyph;
@@ -261,9 +209,13 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
             bool combining_only;
             uint8_t *combined = NULL;
 
-            status = next_grapheme(pass->text, pass->len, offset,
-                                   &end, &width, &combining_only, error);
+            status = km_unicode_next_grapheme(pass->text, pass->len, offset,
+                                              &grapheme, error);
             if (status != KM_OK) return status;
+            end = grapheme.end;
+            width = grapheme.width;
+            combining_only = grapheme.combining_only;
+            select_region_style(pass, offset, end);
             too_wide = width > pass->columns;
             if (too_wide) width = 1;
             wrap_before(pass, width);
@@ -306,32 +258,89 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
     return KM_OK;
 }
 
-static KmStatus put_status(KmCellGrid *grid, size_t row, size_t columns,
-                           const KmLayoutResult *result, bool modified,
-                           const char *message, KmError *error)
+static KmStatus put_status_text(KmCellGrid *grid, size_t row, size_t columns,
+                                size_t *column, const char *text,
+                                KmError *error)
 {
-    char status_text[256];
-    int length = snprintf(status_text, sizeof(status_text),
-                          "%s *scratch*  L%llu C%llu%s%s",
-                          modified ? "**" : "--",
-                          (unsigned long long)result->hard_line + 1u,
-                          (unsigned long long)result->hard_column + 1u,
-                          message == NULL || message[0] == '\0' ? "" : "  ",
-                          message == NULL ? "" : message);
-    size_t count;
-    size_t column;
+    static const uint8_t replacement[] = {0xef, 0xbf, 0xbd};
+    size_t len = strlen(text);
+    size_t offset = 0;
 
-    if (length < 0) return fail(error, KM_ERR_INVALID, "format status line");
-    count = (size_t)length;
-    if (count > sizeof(status_text) - 1) count = sizeof(status_text) - 1;
-    if (count > columns) count = columns;
-    for (column = 0; column < count; ++column) {
-        KmStatus status = km_cell_grid_put(
-            grid, row, column, (const uint8_t *)&status_text[column], 1, 1, 0,
-            error);
+    while (offset < len && *column < columns) {
+        int32_t codepoint;
+        size_t consumed;
+        const uint8_t *glyph;
+        size_t glyph_len;
+        uint8_t width;
+        KmStatus status = km_unicode_decode((const uint8_t *)text, len, offset,
+                                            &codepoint, &consumed, error);
         if (status != KM_OK) return status;
+        if ((codepoint >= 0 && codepoint < 0x20) || codepoint == 0x7f) {
+            static const uint8_t question[] = {'?'};
+            glyph = question;
+            glyph_len = sizeof(question);
+            width = 1;
+            offset += consumed;
+        } else {
+            KmGrapheme grapheme;
+            status = km_unicode_next_grapheme((const uint8_t *)text, len,
+                                              offset, &grapheme, error);
+            if (status != KM_OK) return status;
+            if (grapheme.combining_only) {
+                glyph = replacement;
+                glyph_len = sizeof(replacement);
+                width = 1;
+            } else {
+                glyph = (const uint8_t *)text + offset;
+                glyph_len = grapheme.end - offset;
+                width = grapheme.width;
+            }
+            offset = grapheme.end;
+        }
+        if (width > columns - *column) break;
+        status = km_cell_grid_put(grid, row, *column, glyph, glyph_len, width,
+                                  KM_STYLE_DEFAULT, error);
+        if (status != KM_OK) return status;
+        *column += width;
     }
     return KM_OK;
+}
+
+static KmStatus put_status(KmCellGrid *grid, size_t row, size_t columns,
+                           const KmLayoutResult *result, bool modified,
+                           const char *name, bool region_active,
+                           const char *message, KmError *error)
+{
+    char location[96];
+    int length = snprintf(location, sizeof(location), "  L%llu C%llu",
+                          (unsigned long long)result->hard_line + 1u,
+                          (unsigned long long)result->hard_column + 1u);
+    size_t column = 0;
+    KmStatus status;
+
+    if (length < 0 || (size_t)length >= sizeof(location)) {
+        return fail(error, KM_ERR_INVALID, "format status line");
+    }
+    status = put_status_text(grid, row, columns, &column,
+                             modified ? "** " : "-- ", error);
+    if (status == KM_OK) {
+        status = put_status_text(grid, row, columns, &column, name, error);
+    }
+    if (status == KM_OK && region_active) {
+        status = put_status_text(grid, row, columns, &column, " [Region]",
+                                 error);
+    }
+    if (status == KM_OK) {
+        status = put_status_text(grid, row, columns, &column, location, error);
+    }
+    if (status == KM_OK && message != NULL && message[0] != '\0') {
+        status = put_status_text(grid, row, columns, &column, "  ", error);
+        if (status == KM_OK) {
+            status = put_status_text(grid, row, columns, &column, message,
+                                     error);
+        }
+    }
+    return status;
 }
 
 KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
@@ -343,6 +352,7 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     KmBytePos start;
     KmBytePos end;
     KmBytePos point;
+    KmBytePos mark;
     uint8_t *text = NULL;
     size_t len;
     size_t content_rows;
@@ -362,6 +372,7 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     start = km_buffer_accessible_start(buffer);
     end = km_buffer_accessible_end(buffer);
     point = km_view_point(view);
+    mark = km_buffer_mark(buffer);
     if (document == NULL || start.v > point.v || point.v > end.v) {
         return fail(error, KM_ERR_INVALID, "layout view");
     }
@@ -379,6 +390,9 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     pass.point = point.v - start.v;
     pass.columns = columns;
     pass.content_rows = content_rows;
+    pass.region_active = km_buffer_mark_active(buffer);
+    pass.region_start = mark.v < point.v ? mark.v - start.v : point.v - start.v;
+    pass.region_end = mark.v < point.v ? point.v - start.v : mark.v - start.v;
     status = run_layout_pass(&pass, error);
     if (status != KM_OK) goto fail;
     if (pass.cursor_row < scroll_row) {
@@ -402,11 +416,16 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     pass.scroll_row = scroll_row;
     pass.content_rows = content_rows;
     pass.grid = grid;
+    pass.region_active = km_buffer_mark_active(buffer);
+    pass.region_start = mark.v < point.v ? mark.v - start.v : point.v - start.v;
+    pass.region_end = mark.v < point.v ? point.v - start.v : mark.v - start.v;
     status = run_layout_pass(&pass, error);
     if (status != KM_OK) goto fail;
     if (rows > 1) {
         status = put_status(grid, rows - 1, columns, &result,
-                            km_buffer_is_modified(buffer), message, error);
+                            km_buffer_is_modified(buffer),
+                            km_buffer_name(buffer), km_buffer_mark_active(buffer),
+                            message, error);
         if (status != KM_OK) goto fail;
     }
     free(text);

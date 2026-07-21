@@ -53,7 +53,7 @@ static int wait_for_text(int master, char *output, size_t cap, size_t *length,
     return strstr(output, text) == NULL ? -1 : 0;
 }
 
-static int run_probe(int terminate_with_signal)
+static int run_probe(int terminate_with_signal, const char *path)
 {
     int master = -1;
     int slave = -1;
@@ -85,12 +85,16 @@ static int run_probe(int terminate_with_signal)
         (void)dup2(slave, STDERR_FILENO);
         close(master);
         if (slave > STDERR_FILENO) close(slave);
-        execl("./build/km", "./build/km", (char *)NULL);
+        if (path == NULL) {
+            execl("./build/km", "./build/km", (char *)NULL);
+        } else {
+            execl("./build/km", "./build/km", path, (char *)NULL);
+        }
         _exit(127);
     }
 
     if (wait_for_text(master, output, sizeof(output), &output_len,
-                      "*scratch*", 2000) != 0)
+                      path == NULL ? "*scratch*" : path, 2000) != 0)
         goto kill_child;
     if (ioctl(master, TIOCSWINSZ, &size) != 0) goto kill_child;
     if (wait_for_text(master, output, sizeof(output), &output_len,
@@ -99,17 +103,33 @@ static int run_probe(int terminate_with_signal)
     }
     if (terminate_with_signal) {
         if (kill(child, SIGTERM) != 0) goto kill_child;
-    } else {
+    } else if (path == NULL) {
         static const unsigned char edit[] = {
             'a', 'b', 'c', 0x02, 0x04, 0x7f,
-            0x18, 'u', 0x18, 'r',
-            '\r', 0xe4, 0xb8, 0xad, 0x07, 'q', 0x18, 0x03,
+            0x18, 'u', 0x18, 0x12,
+            '\r', 0xe4, 0xb8, 0xad, 0x07, 'q',
+            0x18, 0x03, 0x18, 0x03,
         };
         if (write(master, edit, sizeof(edit)) != (ssize_t)sizeof(edit)) {
             goto kill_child;
         }
         if (wait_for_text(master, output, sizeof(output), &output_len,
                           "\x1b[1;1Ha\x1b[2;1H\xe4\xb8\xadq", 2000) != 0) {
+            goto kill_child;
+        }
+    } else {
+        static const unsigned char edit[] = {
+            0x1b, '[', 'B', 0x1b, '[', 'C', 0x00, 0x1b, '[', 'C',
+            0x17, 0x19, 0xe4, 0xb8, 0xad, 0x18, 0x13,
+        };
+        static const unsigned char exit_keys[] = {0x18, 0x03};
+        if (write(master, edit, sizeof(edit)) != (ssize_t)sizeof(edit)) {
+            goto kill_child;
+        }
+        if (wait_for_text(master, output, sizeof(output), &output_len,
+                          "Wrote", 2000) != 0 ||
+            write(master, exit_keys, sizeof(exit_keys)) !=
+                (ssize_t)sizeof(exit_keys)) {
             goto kill_child;
         }
     }
@@ -128,7 +148,7 @@ static int run_probe(int terminate_with_signal)
     if (strstr(output, "\x1b[?1049h") == NULL ||
         strstr(output, "\x1b[?1049l") == NULL ||
         strstr(output, "\x1b[1;1H") == NULL ||
-        strstr(output, "*scratch*") == NULL) goto done;
+        strstr(output, path == NULL ? "*scratch*" : path) == NULL) goto done;
     if (terminate_with_signal) {
         if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGTERM) goto done;
     } else if (strstr(output, "abc") == NULL || !WIFEXITED(status) ||
@@ -154,12 +174,43 @@ done:
 
 int main(void)
 {
-    if (run_probe(0) != 0) {
+    char path[] = "/tmp/km-pty-file-XXXXXX";
+    static const char initial[] = "abc\nxyz";
+    static const char expected[] = "abc\nxy\xe4\xb8\xadz";
+    char actual[32] = {0};
+    int descriptor;
+    ssize_t count;
+
+    if (run_probe(0, NULL) != 0) {
         fprintf(stderr, "test_platform_pty: normal/resize probe failed: %s\n",
                 strerror(errno));
         return 1;
     }
-    if (run_probe(1) != 0) {
+    descriptor = mkstemp(path);
+    if (descriptor < 0 ||
+        write(descriptor, initial, sizeof(initial) - 1) !=
+            (ssize_t)(sizeof(initial) - 1) ||
+        close(descriptor) != 0) {
+        fprintf(stderr, "test_platform_pty: create file probe failed: %s\n",
+                strerror(errno));
+        return 1;
+    }
+    if (run_probe(0, path) != 0) {
+        (void)unlink(path);
+        fprintf(stderr, "test_platform_pty: file/save probe failed: %s\n",
+                strerror(errno));
+        return 1;
+    }
+    descriptor = open(path, O_RDONLY);
+    count = descriptor < 0 ? -1 : read(descriptor, actual, sizeof(actual));
+    if (descriptor >= 0) (void)close(descriptor);
+    (void)unlink(path);
+    if (count != (ssize_t)(sizeof(expected) - 1) ||
+        memcmp(actual, expected, sizeof(expected) - 1) != 0) {
+        fprintf(stderr, "test_platform_pty: saved bytes were incorrect\n");
+        return 1;
+    }
+    if (run_probe(1, NULL) != 0) {
         fprintf(stderr, "test_platform_pty: signal restore probe failed: %s\n",
                 strerror(errno));
         return 1;
