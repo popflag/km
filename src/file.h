@@ -5,6 +5,11 @@
 
 typedef struct KmPath KmPath;
 typedef struct KmFile KmFile;
+typedef struct {
+    char **items;
+    size_t count;
+    char *common;
+} KmPathCompletions;
 
 KmStatus km_path_from_command_line(int argc, char **argv, KmPath **out_path,
                                    KmError *error);
@@ -12,6 +17,10 @@ KmStatus km_path_from_utf8(const char *path, KmPath **out_path, KmError *error);
 /* Returns an allocated longest-prefix completion, or NULL when none match. */
 KmStatus km_path_complete_utf8(const char *prefix, char **out_completion,
                                KmError *error);
+KmStatus km_path_completions_utf8(const char *prefix,
+                                  KmPathCompletions *out_completions,
+                                  KmError *error);
+void km_path_completions_destroy(KmPathCompletions *completions);
 void km_path_destroy(KmPath *path);
 
 /* km_file_load takes ownership of path whether it succeeds or fails. */

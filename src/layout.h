@@ -14,7 +14,8 @@ typedef struct {
 
 KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
                         size_t rows, size_t columns, size_t scroll_row,
-                        const char *message, bool prompt_active,
+                        const char *message, const char *completion,
+                        bool prompt_active,
                         KmCellGrid **out_grid,
                         KmLayoutResult *out_result, KmError *error);
 KmStatus km_layout_scroll_view(const KmBuffer *buffer, KmView *view,

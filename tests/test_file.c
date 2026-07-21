@@ -32,6 +32,7 @@ int main(void)
     char completion_prefix[MAX_PATH];
     char folder[MAX_PATH];
     char *completion = NULL;
+    KmPathCompletions candidates = {0};
     char temporary[MAX_PATH];
     KmPath *opaque = NULL;
     KmFile *file = NULL;
@@ -65,6 +66,11 @@ int main(void)
     CHECK(completion != NULL && strcmp(completion, path) == 0);
     free(completion);
     completion = NULL;
+    CHECK(km_path_completions_utf8(completion_prefix, &candidates, &error) ==
+          KM_OK);
+    CHECK(candidates.count == 1 && strcmp(candidates.items[0], path) == 0);
+    CHECK(candidates.common != NULL && strcmp(candidates.common, path) == 0);
+    km_path_completions_destroy(&candidates);
     CHECK(snprintf(folder, sizeof(folder), "%s\\folder", temporary) > 0);
     CHECK(CreateDirectoryA(folder, NULL));
     CHECK(snprintf(completion_prefix, sizeof(completion_prefix), "%s\\fol",
@@ -236,7 +242,9 @@ int main(void)
     char invalid_dir[512];
     char completion_path[512];
     char invalid_path[512];
+    char control_path[512];
     char *completion = NULL;
+    KmPathCompletions candidates = {0};
     uint8_t disk[64];
     KmBuffer *buffer;
     KmBuffer *alias_buffer;
@@ -270,12 +278,33 @@ int main(void)
     CHECK(strcmp(completion, path) == 0);
     free(completion);
     completion = NULL;
+    CHECK(snprintf(path, sizeof(path), "%s/al", completion_dir) > 0);
+    CHECK(km_path_completions_utf8(path, &candidates, &error) == KM_OK);
+    CHECK(candidates.count == 2);
+    CHECK(snprintf(completion_path, sizeof(completion_path), "%s/alpha.txt",
+                   completion_dir) > 0);
+    CHECK(strcmp(candidates.items[0], completion_path) == 0);
+    CHECK(snprintf(completion_path, sizeof(completion_path), "%s/alpine.txt",
+                   completion_dir) > 0);
+    CHECK(strcmp(candidates.items[1], completion_path) == 0);
+    CHECK(snprintf(path, sizeof(path), "%s/alp", completion_dir) > 0);
+    CHECK(candidates.common != NULL && strcmp(candidates.common, path) == 0);
+    km_path_completions_destroy(&candidates);
     CHECK(snprintf(path, sizeof(path), "%s/fol", completion_dir) > 0);
     CHECK(km_path_complete_utf8(path, &completion, &error) == KM_OK);
     CHECK(snprintf(path, sizeof(path), "%s/folder/", completion_dir) > 0);
     CHECK(completion != NULL && strcmp(completion, path) == 0);
     free(completion);
     completion = NULL;
+    CHECK(snprintf(path, sizeof(path), "%s/fol", completion_dir) > 0);
+    CHECK(km_path_completions_utf8(path, &candidates, &error) == KM_OK);
+    CHECK(snprintf(completion_path, sizeof(completion_path), "%s/folder/",
+                   completion_dir) > 0);
+    CHECK(candidates.count == 1);
+    CHECK(strcmp(candidates.items[0], completion_path) == 0);
+    CHECK(candidates.common != NULL &&
+          strcmp(candidates.common, completion_path) == 0);
+    km_path_completions_destroy(&candidates);
     CHECK(snprintf(completion_path, sizeof(completion_path),
                    "%s/\xc3\xa9.txt", unicode_dir) > 0);
     write_bytes(completion_path, (const uint8_t *)"", 0);
@@ -295,12 +324,18 @@ int main(void)
         invalid_path[invalid_len + 1] = '\0';
     }
     write_bytes(invalid_path, (const uint8_t *)"", 0);
+    CHECK(snprintf(control_path, sizeof(control_path), "%s/bad\nname",
+                   invalid_dir) > 0);
+    write_bytes(control_path, (const uint8_t *)"", 0);
     CHECK(km_path_complete_utf8(invalid_path, &completion, &error) ==
           KM_ERR_INVALID);
     CHECK(completion == NULL);
     CHECK(snprintf(path, sizeof(path), "%s/", invalid_dir) > 0);
     CHECK(km_path_complete_utf8(path, &completion, &error) == KM_OK);
     CHECK(completion == NULL);
+    CHECK(km_path_completions_utf8(path, &candidates, &error) == KM_OK);
+    CHECK(candidates.count == 0 && candidates.common == NULL);
+    km_path_completions_destroy(&candidates);
     path_join(path, sizeof(path), directory, "visited.txt");
     path_join(other, sizeof(other), directory, "replacement.txt");
     path_join(bad, sizeof(bad), directory, "invalid.txt");
@@ -392,6 +427,7 @@ int main(void)
     CHECK(unlink(mixed) == 0);
     CHECK(unlink(cr_path) == 0);
     CHECK(unlink(invalid_path) == 0);
+    CHECK(unlink(control_path) == 0);
     CHECK(rmdir(invalid_dir) == 0);
     CHECK(snprintf(completion_path, sizeof(completion_path),
                    "%s/\xc3\xa9.txt", unicode_dir) > 0);

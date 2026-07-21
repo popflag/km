@@ -36,17 +36,24 @@ static void check_text(const KmBuffer *buffer, const uint8_t *expected,
     free(actual);
 }
 
-static KmStatus dispatch_key(KmCommandLoop *loop, KmView *view,
-                             uint32_t codepoint, uint32_t modifiers,
-                             KmError *error)
+static KmStatus dispatch_key_repeat(KmCommandLoop *loop, KmView *view,
+                                    uint32_t codepoint, uint32_t modifiers,
+                                    uint32_t repeat, KmError *error)
 {
     KmEvent event = {0};
 
     event.kind = KM_EVENT_KEY;
     event.codepoint = codepoint;
     event.modifiers = modifiers;
-    event.repeat = 1;
+    event.repeat = repeat;
     return km_command_loop_dispatch(loop, view, &event, error);
+}
+
+static KmStatus dispatch_key(KmCommandLoop *loop, KmView *view,
+                             uint32_t codepoint, uint32_t modifiers,
+                             KmError *error)
+{
+    return dispatch_key_repeat(loop, view, codepoint, modifiers, 1, error);
 }
 
 static KmStatus dispatch_text(KmCommandLoop *loop, KmView *view,
@@ -878,6 +885,8 @@ static void test_minibuffer_requests(void)
 {
     static const uint8_t cjk[] = {0xe4, 0xb8, 0xad};
     static const uint8_t invalid[] = {0xc0, 0x80};
+    static const char *const buffer_matches[] = {"*scratch*"};
+    static const char *const directory_match[] = {"/tmp/sub/"};
     KmBuffer *buffer = make_base(NULL, 0);
     KmView *view = NULL;
     KmCommandLoop *loop = NULL;
@@ -888,8 +897,10 @@ static void test_minibuffer_requests(void)
     CHECK(km_command_loop_create(&loop, &error) == KM_OK);
 
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
-    CHECK(dispatch_key(loop, view, 'f', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key_repeat(loop, view, 'f', KM_MOD_CTRL, 2, &error) ==
+          KM_OK);
     CHECK(km_command_loop_prompt_active(loop));
+    CHECK(dispatch_key(loop, view, 'k', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_text_block(loop, view, (const uint8_t *)"note-", 5,
                               &error) == KM_OK);
     CHECK(dispatch_paste(loop, view, cjk, sizeof(cjk), &error) == KM_OK);
@@ -912,12 +923,16 @@ static void test_minibuffer_requests(void)
     CHECK(dispatch_key(loop, view, 'b', 0, &error) == KM_OK);
     CHECK(dispatch_text_block(loop, view, (const uint8_t *)"*s", 2,
                               &error) == KM_OK);
+    km_command_loop_clear_request(loop);
+    CHECK(km_command_loop_set_completions(loop, buffer_matches, 1,
+                                          "*scratch*", &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(strcmp(prompt, " [cratch*] [Matched]") == 0);
     CHECK(dispatch_key(loop, view, KM_KEY_TAB, 0, &error) == KM_OK);
     CHECK(km_command_loop_request(loop) ==
           KM_COMMAND_REQUEST_COMPLETE_BUFFER);
     CHECK(km_command_loop_prompt_active(loop));
     km_command_loop_clear_request(loop);
-    CHECK(km_command_loop_set_prompt_text(loop, "*scratch*", &error) == KM_OK);
     CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
     CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_SWITCH_BUFFER);
     CHECK(strcmp(km_command_loop_request_text(loop), "*scratch*") == 0);
@@ -961,6 +976,35 @@ static void test_minibuffer_requests(void)
     CHECK(km_command_loop_request_page_opposite(loop));
     km_command_loop_clear_request(loop);
 
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_text_block(loop, view, (const uint8_t *)"scroll-", 7,
+                              &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(strcmp(prompt,
+                 " {scroll-down-command | scroll-up-command}") == 0);
+    CHECK(dispatch_key(loop, view, KM_KEY_RIGHT, 0, &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(strcmp(prompt,
+                 " {scroll-up-command | scroll-down-command}") == 0);
+    CHECK(dispatch_key(loop, view, 'r', KM_MOD_CTRL, &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(strcmp(prompt,
+                 " {scroll-down-command | scroll-up-command}") == 0);
+    CHECK(dispatch_key(loop, view, 's', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_SCROLL_UP);
+    km_command_loop_clear_request(loop);
+
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_text_block(loop, view, (const uint8_t *)"no-such", 7,
+                              &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(strcmp(prompt, " [No matches]") == 0);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_ERR_INVALID);
+    CHECK(km_command_loop_prompt_active(loop));
+    CHECK(dispatch_key(loop, view, 'g', KM_MOD_CTRL, &error) == KM_OK);
+    km_command_loop_clear_quit(loop);
+
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_key(loop, view, 'f', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_text(loop, view, 0, 1, &error) == KM_ERR_INVALID);
@@ -971,6 +1015,28 @@ static void test_minibuffer_requests(void)
     CHECK(!km_command_loop_prompt_active(loop));
     CHECK(km_command_loop_quit_requested(loop));
     km_command_loop_clear_quit(loop);
+
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'f', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, 'a', 3, &error) == KM_OK);
+    CHECK(strcmp(km_command_loop_request_text(loop), "aaa") == 0);
+    CHECK(km_command_loop_set_prompt_text(loop, "/tmp/foo/", &error) == KM_OK);
+    km_command_loop_clear_request(loop);
+    CHECK(dispatch_key(loop, view, 0x7f, 0, &error) == KM_OK);
+    CHECK(strcmp(km_command_loop_request_text(loop), "/tmp/") == 0);
+    km_command_loop_clear_request(loop);
+    CHECK(km_command_loop_set_completions(loop, directory_match, 1,
+                                          "/tmp/sub/", &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_COMPLETE_FILE);
+    CHECK(strcmp(km_command_loop_request_text(loop), "/tmp/sub/") == 0);
+    km_command_loop_clear_request(loop);
+    CHECK(km_command_loop_set_prompt_text(loop, "/tmp/", &error) == KM_OK);
+    km_command_loop_clear_request(loop);
+    CHECK(dispatch_key(loop, view, 'j', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_FIND_FILE);
+    CHECK(strcmp(km_command_loop_request_text(loop), "/tmp/") == 0);
+    km_command_loop_clear_request(loop);
 
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_key(loop, view, 'k', 0, &error) == KM_OK);

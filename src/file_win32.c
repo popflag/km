@@ -265,8 +265,66 @@ static bool valid_wide_completion_name(const WCHAR *name, size_t len)
                                NULL, 0, NULL, NULL) > 0;
 }
 
-KmStatus km_path_complete_utf8(const char *prefix, char **out_completion,
-                               KmError *error)
+static int compare_completion(const void *left, const void *right)
+{
+    const char *const *a = (const char *const *)left;
+    const char *const *b = (const char *const *)right;
+    return strcmp(*a, *b);
+}
+
+void km_path_completions_destroy(KmPathCompletions *completions)
+{
+    size_t i;
+    if (completions == NULL) return;
+    for (i = 0; i < completions->count; ++i) free(completions->items[i]);
+    free(completions->items);
+    free(completions->common);
+    *completions = (KmPathCompletions){0};
+}
+
+static KmStatus wide_completion_to_utf8(const WCHAR *wide, size_t wide_len,
+                                        char **out, KmError *error)
+{
+    int utf8_len;
+
+    *out = NULL;
+    if (wide_len == 0) {
+        *out = (char *)malloc(1);
+        if (*out == NULL) {
+            return fail(error, KM_ERR_OOM, "complete file path", 0);
+        }
+        (*out)[0] = '\0';
+        return KM_OK;
+    }
+    if (wide_len > (size_t)INT_MAX) {
+        return fail(error, KM_ERR_OOM, "complete file path", 0);
+    }
+    utf8_len = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide,
+                                   (int)wide_len, NULL, 0, NULL, NULL);
+    if (utf8_len <= 0) {
+        return fail(error, KM_ERR_INVALID, "complete file path",
+                    GetLastError());
+    }
+    *out = (char *)malloc((size_t)utf8_len + 1);
+    if (*out == NULL) {
+        return fail(error, KM_ERR_OOM, "complete file path", 0);
+    }
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide,
+                            (int)wide_len, *out, utf8_len, NULL, NULL) !=
+        utf8_len) {
+        free(*out);
+        *out = NULL;
+        return fail(error, KM_ERR_INVALID, "complete file path",
+                    GetLastError());
+    }
+    (*out)[utf8_len] = '\0';
+    return KM_OK;
+}
+
+static KmStatus path_completions_utf8(const char *prefix,
+                                      char **out_completion,
+                                      KmPathCompletions *out_candidates,
+                                      KmError *error)
 {
     KmPath *typed = NULL;
     const WCHAR empty[] = L"";
@@ -283,15 +341,21 @@ KmStatus km_path_complete_utf8(const char *prefix, char **out_completion,
     size_t common_len = 0;
     size_t matches = 0;
     bool only_is_directory = false;
+    KmPathCompletions candidates = {0};
+    size_t candidate_capacity = 0;
+    char *completion = NULL;
     WIN32_FIND_DATAW found;
     HANDLE search = INVALID_HANDLE_VALUE;
     KmStatus status = KM_OK;
 
     km_error_clear(error);
-    if (prefix == NULL || out_completion == NULL) {
+    if (prefix == NULL || (out_completion == NULL && out_candidates == NULL)) {
         return fail(error, KM_ERR_INVALID, "complete file path", 0);
     }
-    *out_completion = NULL;
+    if (out_completion != NULL) *out_completion = NULL;
+    if (out_candidates != NULL) {
+        *out_candidates = (KmPathCompletions){0};
+    }
     if (prefix[0] == '\0') {
         wide = empty;
     } else {
@@ -340,6 +404,69 @@ KmStatus km_path_complete_utf8(const char *prefix, char **out_completion,
              CompareStringOrdinal(found.cFileName, (int)prefix_len,
                                   name_prefix, (int)prefix_len, TRUE) ==
                  CSTR_EQUAL)) {
+            if (out_candidates != NULL) {
+                size_t suffix =
+                    (found.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0
+                        ? 1
+                        : 0;
+                size_t candidate_len;
+                WCHAR *candidate_wide;
+                char *candidate_utf8;
+                char **items;
+
+                if (name_len > SIZE_MAX - head_len ||
+                    suffix > SIZE_MAX - head_len - name_len ||
+                    head_len + name_len + suffix > (size_t)INT_MAX ||
+                    head_len + name_len + suffix >
+                        SIZE_MAX / sizeof(WCHAR) - 1) {
+                    status = fail(error, KM_ERR_OOM, "complete file path", 0);
+                    break;
+                }
+                candidate_len = head_len + name_len + suffix;
+                candidate_wide = (WCHAR *)malloc(
+                    (candidate_len + 1) * sizeof(WCHAR));
+                if (candidate_wide == NULL) {
+                    status = fail(error, KM_ERR_OOM, "complete file path", 0);
+                    break;
+                }
+                if (head_len != 0) {
+                    memcpy(candidate_wide, wide, head_len * sizeof(WCHAR));
+                }
+                memcpy(candidate_wide + head_len, found.cFileName,
+                       name_len * sizeof(WCHAR));
+                if (suffix != 0) {
+                    candidate_wide[head_len + name_len] =
+                        separator != NULL && *separator == L'/' ? L'/' : L'\\';
+                }
+                candidate_wide[candidate_len] = L'\0';
+                status = wide_completion_to_utf8(
+                    candidate_wide, candidate_len, &candidate_utf8, error);
+                free(candidate_wide);
+                if (status != KM_OK) break;
+                if (candidates.count == candidate_capacity) {
+                    size_t capacity = candidate_capacity == 0
+                                          ? 8
+                                          : candidate_capacity * 2;
+                    if (capacity < candidate_capacity ||
+                        capacity > SIZE_MAX / sizeof(*items)) {
+                        free(candidate_utf8);
+                        status = fail(error, KM_ERR_OOM,
+                                      "complete file path", 0);
+                        break;
+                    }
+                    items = (char **)realloc(
+                        candidates.items, capacity * sizeof(*items));
+                    if (items == NULL) {
+                        free(candidate_utf8);
+                        status = fail(error, KM_ERR_OOM,
+                                      "complete file path", 0);
+                        break;
+                    }
+                    candidates.items = items;
+                    candidate_capacity = capacity;
+                }
+                candidates.items[candidates.count++] = candidate_utf8;
+            }
             if (matches == 0) {
                 if (name_len > SIZE_MAX / sizeof(WCHAR) - 1) {
                     status = fail(error, KM_ERR_OOM, "complete file path", 0);
@@ -374,8 +501,8 @@ KmStatus km_path_complete_utf8(const char *prefix, char **out_completion,
         size_t suffix = only_is_directory ? 1 : 0;
         size_t completed_len;
         WCHAR *completed;
-        int utf8_len;
-        if (head_len > SIZE_MAX - common_len - suffix ||
+        if (common_len > SIZE_MAX - head_len ||
+            suffix > SIZE_MAX - head_len - common_len ||
             head_len + common_len + suffix > (size_t)INT_MAX ||
             head_len + common_len + suffix >
                 SIZE_MAX / sizeof(WCHAR) - 1) {
@@ -395,41 +522,8 @@ KmStatus km_path_complete_utf8(const char *prefix, char **out_completion,
                 separator != NULL && *separator == L'/' ? L'/' : L'\\';
         }
         completed[completed_len] = L'\0';
-        if (completed_len == 0) {
-            *out_completion = (char *)malloc(1);
-            if (*out_completion == NULL) {
-                status = fail(error, KM_ERR_OOM, "complete file path", 0);
-            } else {
-                (*out_completion)[0] = '\0';
-            }
-            free(completed);
-            goto done;
-        }
-        utf8_len = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
-                                       completed, (int)completed_len,
-                                       NULL, 0, NULL, NULL);
-        if (utf8_len <= 0) {
-            status = fail(error, KM_ERR_INVALID, "complete file path",
-                          GetLastError());
-            free(completed);
-            goto done;
-        }
-        *out_completion = (char *)malloc((size_t)utf8_len + 1);
-        if (*out_completion == NULL) {
-            status = fail(error, KM_ERR_OOM, "complete file path", 0);
-            free(completed);
-            goto done;
-        }
-        if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
-                                completed, (int)completed_len,
-                                *out_completion, utf8_len, NULL, NULL) !=
-            utf8_len) {
-            status = fail(error, KM_ERR_INVALID, "complete file path",
-                          GetLastError());
-            free(completed);
-            goto done;
-        }
-        (*out_completion)[utf8_len] = '\0';
+        status = wide_completion_to_utf8(completed, completed_len,
+                                         &completion, error);
         free(completed);
     }
 
@@ -438,14 +532,38 @@ done:
         status == KM_OK) {
         status = fail(error, KM_ERR_IO, "complete file path", GetLastError());
     }
-    if (status != KM_OK) {
-        free(*out_completion);
-        *out_completion = NULL;
+    if (status == KM_OK && out_candidates != NULL) {
+        if (candidates.count != 0) {
+            qsort(candidates.items, candidates.count,
+                  sizeof(*candidates.items), compare_completion);
+        }
+        candidates.common = completion;
+        completion = NULL;
+        *out_candidates = candidates;
+        candidates = (KmPathCompletions){0};
+    } else if (status == KM_OK) {
+        *out_completion = completion;
+        completion = NULL;
     }
+    free(completion);
+    km_path_completions_destroy(&candidates);
     free(common);
     free(pattern);
     km_path_destroy(typed);
     return status;
+}
+
+KmStatus km_path_complete_utf8(const char *prefix, char **out_completion,
+                               KmError *error)
+{
+    return path_completions_utf8(prefix, out_completion, NULL, error);
+}
+
+KmStatus km_path_completions_utf8(const char *prefix,
+                                  KmPathCompletions *out_completions,
+                                  KmError *error)
+{
+    return path_completions_utf8(prefix, NULL, out_completions, error);
 }
 
 void km_path_destroy(KmPath *path)

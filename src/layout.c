@@ -485,7 +485,8 @@ static size_t line_number_gutter(const uint8_t *text, size_t len,
 
 KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
                         size_t rows, size_t columns, size_t scroll_row,
-                        const char *message, bool prompt_active,
+                        const char *message, const char *completion,
+                        bool prompt_active,
                         KmCellGrid **out_grid,
                         KmLayoutResult *out_result, KmError *error)
 {
@@ -590,6 +591,10 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
             result.cursor_column = echo_column < columns
                                        ? echo_column
                                        : columns - 1;
+            status = put_status_text(grid, rows - 1, columns, &echo_column,
+                                     completion == NULL ? "" : completion,
+                                     KM_STYLE_DEFAULT, error);
+            if (status != KM_OK) goto fail;
         }
     } else if (rows > 1 &&
                (prompt_active || (message != NULL && message[0] != '\0'))) {
@@ -603,6 +608,10 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
             result.cursor_column = echo_column < columns
                                        ? echo_column
                                        : columns - 1;
+            status = put_status_text(grid, rows - 1, columns, &echo_column,
+                                     completion == NULL ? "" : completion,
+                                     KM_STYLE_DEFAULT, error);
+            if (status != KM_OK) goto fail;
         }
     } else if (rows > 1) {
         status = put_status(grid, rows - 1, columns, &result,
@@ -621,6 +630,10 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
             result.cursor_column = echo_column < columns
                                        ? echo_column
                                        : columns - 1;
+            status = put_status_text(grid, 0, columns, &echo_column,
+                                     completion == NULL ? "" : completion,
+                                     KM_STYLE_DEFAULT, error);
+            if (status != KM_OK) goto fail;
         }
     }
     free(text);

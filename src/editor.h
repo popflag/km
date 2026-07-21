@@ -113,10 +113,18 @@ bool km_command_loop_request_page_opposite(const KmCommandLoop *loop);
 void km_command_loop_clear_request(KmCommandLoop *loop);
 KmStatus km_command_loop_set_prompt_text(KmCommandLoop *loop,
                                          const char *text, KmError *error);
+KmStatus km_command_loop_set_completions(KmCommandLoop *loop,
+                                         const char *const *items,
+                                         size_t count, const char *common,
+                                         KmError *error);
+KmStatus km_command_loop_select_completion(KmCommandLoop *loop,
+                                           const char *item, KmError *error);
 KmStatus km_command_loop_confirm_exit(KmCommandLoop *loop, KmError *error);
 bool km_command_loop_search_active(const KmCommandLoop *loop);
 bool km_command_loop_prompt_active(const KmCommandLoop *loop);
 void km_command_loop_format_prompt(const KmCommandLoop *loop,
                                    char *destination, size_t capacity);
+void km_command_loop_format_completions(const KmCommandLoop *loop,
+                                        char *destination, size_t capacity);
 
 #endif

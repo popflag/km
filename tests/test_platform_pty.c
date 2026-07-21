@@ -194,10 +194,14 @@ static int run_probe(int terminate_with_signal, const char *path,
             write_bytes(master, "\t", 1) != 0 ||
             write_bytes(master, extended_command,
                         sizeof(extended_command)) != 0 ||
+            wait_for_text(master, output, sizeof(output), &output_len,
+                          " {", 2000) != 0 ||
             write_bytes(master, paste_start, sizeof(paste_start)) != 0 ||
             write_bytes(master, save_all_prefix,
                         sizeof(save_all_prefix) - 1) != 0 ||
             write_bytes(master, paste_end, sizeof(paste_end)) != 0 ||
+            wait_for_text(master, output, sizeof(output), &output_len,
+                          " [ill-terminal] [Matched]", 2000) != 0 ||
             write_bytes(master, "\t", 1) != 0 ||
             write_bytes(master, "\r", 1) != 0) {
             goto kill_child;

@@ -64,34 +64,25 @@ static size_t find_buffer(const AppBuffers *buffers, const char *name)
     return SIZE_MAX;
 }
 
-static size_t utf8_common_prefix(const char *left, size_t left_len,
-                                 const char *right, size_t right_len)
-{
-    size_t common = left_len < right_len ? left_len : right_len;
-    size_t offset = 0;
-
-    while (offset < common && left[offset] == right[offset]) ++offset;
-    common = offset;
-    while (common != 0 && common < left_len &&
-           ((unsigned char)left[common] & 0xc0u) == 0x80u) {
-        --common;
-    }
-    return common;
-}
-
-static KmStatus complete_buffer_name(const AppBuffers *buffers,
-                                     KmCommandLoop *loop, const char *prefix,
-                                     KmError *error)
+static KmStatus set_buffer_completions(const AppBuffers *buffers,
+                                       KmCommandLoop *loop,
+                                       const char *prefix, KmError *error)
 {
     size_t prefix_len = strlen(prefix);
-    const char *first = NULL;
-    size_t first_len = 0;
-    size_t common_len = 0;
-    size_t matches = 0;
+    const char **matches;
+    size_t count = 0;
     size_t i;
-    char *completion;
     KmStatus status;
 
+    if (buffers->count > SIZE_MAX / sizeof(*matches)) {
+        return app_fail(error, KM_ERR_OOM, "complete buffer");
+    }
+    matches = buffers->count == 0
+                  ? NULL
+                  : (const char **)malloc(buffers->count * sizeof(*matches));
+    if (buffers->count != 0 && matches == NULL) {
+        return app_fail(error, KM_ERR_OOM, "complete buffer");
+    }
     for (i = 0; i < buffers->count; ++i) {
         const char *candidate = km_buffer_name(buffers->items[i].buffer);
         size_t candidate_len = strlen(candidate);
@@ -100,24 +91,17 @@ static KmStatus complete_buffer_name(const AppBuffers *buffers,
              memcmp(candidate, prefix, prefix_len) != 0)) {
             continue;
         }
-        if (matches == 0) {
-            first = candidate;
-            first_len = candidate_len;
-            common_len = candidate_len;
-        } else {
-            size_t candidate_common = utf8_common_prefix(
-                first, first_len, candidate, candidate_len);
-            if (candidate_common < common_len) common_len = candidate_common;
-        }
-        ++matches;
+        matches[count++] = candidate;
     }
-    if (matches == 0 || common_len == prefix_len) return KM_OK;
-    completion = (char *)malloc(common_len + 1);
-    if (completion == NULL) return app_fail(error, KM_ERR_OOM, "complete buffer");
-    memcpy(completion, first, common_len);
-    completion[common_len] = '\0';
-    status = km_command_loop_set_prompt_text(loop, completion, error);
-    free(completion);
+    status = km_command_loop_set_completions(loop, matches, count, NULL, error);
+    if (status == KM_OK && prefix_len == 0 && buffers->count != 0) {
+        status = km_command_loop_select_completion(
+            loop,
+            km_buffer_name(
+                buffers->items[(buffers->current + 1) % buffers->count].buffer),
+            error);
+    }
+    free(matches);
     return status;
 }
 
@@ -311,7 +295,7 @@ static void set_core_error(char *destination, size_t capacity,
 
 static int redraw(KmPlatform *platform, const KmBuffer *buffer,
                   const KmView *view, size_t *scroll_row, const char *message,
-                  bool prompt_active,
+                  const char *completion, bool prompt_active,
                   char *error, size_t error_cap)
 {
     KmCellGrid *grid = NULL;
@@ -323,7 +307,7 @@ static int redraw(KmPlatform *platform, const KmBuffer *buffer,
 
     km_platform_size(platform, &columns, &rows);
     if (km_layout_view(buffer, view, rows, columns, *scroll_row, message,
-                       prompt_active,
+                       completion, prompt_active,
                        &grid, &layout, &core_error) != KM_OK) {
         set_core_error(error, error_cap, &core_error);
         return -1;
@@ -339,6 +323,7 @@ int main(int argc, char **argv)
 {
     char platform_error[256] = {0};
     char message[256] = {0};
+    char completion[4096] = {0};
     KmPlatform *platform = NULL;
     KmBuffer *initial_buffer = NULL;
     KmView *view = NULL;
@@ -402,7 +387,7 @@ int main(int argc, char **argv)
         goto done;
     }
     if (redraw(platform, buffers.items[0].buffer, view,
-               &buffers.items[0].scroll_row, message, false,
+               &buffers.items[0].scroll_row, message, completion, false,
                platform_error, sizeof(platform_error)) != 0) {
         goto done;
     }
@@ -498,14 +483,16 @@ int main(int argc, char **argv)
         }
         case KM_COMMAND_REQUEST_COMPLETE_FILE: {
             const char *prefix = km_command_loop_request_text(loop);
-            char *completion = NULL;
+            KmPathCompletions candidates = {0};
             km_command_loop_clear_request(loop);
-            status = km_path_complete_utf8(prefix, &completion, &core_error);
-            if (status == KM_OK && completion != NULL) {
-                status = km_command_loop_set_prompt_text(loop, completion,
-                                                         &core_error);
+            status = km_path_completions_utf8(prefix, &candidates,
+                                              &core_error);
+            if (status == KM_OK) {
+                status = km_command_loop_set_completions(
+                    loop, (const char *const *)candidates.items,
+                    candidates.count, candidates.common, &core_error);
             }
-            free(completion);
+            km_path_completions_destroy(&candidates);
             if (status != KM_OK) {
                 set_core_error(message, sizeof(message), &core_error);
             }
@@ -514,7 +501,8 @@ int main(int argc, char **argv)
         case KM_COMMAND_REQUEST_COMPLETE_BUFFER: {
             const char *prefix = km_command_loop_request_text(loop);
             km_command_loop_clear_request(loop);
-            status = complete_buffer_name(&buffers, loop, prefix, &core_error);
+            status = set_buffer_completions(&buffers, loop, prefix,
+                                            &core_error);
             if (status != KM_OK) {
                 set_core_error(message, sizeof(message), &core_error);
             }
@@ -571,9 +559,14 @@ int main(int argc, char **argv)
         if (km_command_loop_search_active(loop) ||
             km_command_loop_prompt_active(loop)) {
             km_command_loop_format_prompt(loop, message, sizeof(message));
+            km_command_loop_format_completions(loop, completion,
+                                               sizeof(completion));
+        } else {
+            completion[0] = '\0';
         }
         if (redraw(platform, buffers.items[buffers.current].buffer, view,
                    &buffers.items[buffers.current].scroll_row, message,
+                   completion,
                    km_command_loop_search_active(loop) ||
                        km_command_loop_prompt_active(loop),
                    platform_error, sizeof(platform_error)) != 0) {

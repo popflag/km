@@ -71,6 +71,10 @@ struct KmCommandLoop {
     uint8_t *prompt_text;
     size_t prompt_len;
     size_t prompt_cap;
+    char **completions;
+    size_t completion_count;
+    size_t completion_index;
+    char *completion_common;
     uint8_t *kill;
     size_t kill_len;
     bool has_kill;
@@ -85,6 +89,9 @@ struct KmCommandLoop {
 typedef KmStatus (*KmCommandCallback)(KmCommandLoop *loop, KmView *view,
                                       int64_t argument,
                                       KmError *error);
+
+static KmStatus refresh_prompt_completions(KmCommandLoop *loop,
+                                           KmError *error);
 
 typedef struct {
     KmCommandId id;
@@ -1812,72 +1819,174 @@ static bool prompt_is(const KmCommandLoop *loop, const char *name)
            memcmp(loop->prompt_text, name, len) == 0;
 }
 
-static size_t common_ascii_prefix(const char *left, const char *right)
-{
-    size_t length = 0;
-    while (left[length] != '\0' && right[length] != '\0' &&
-           left[length] == right[length]) {
-        ++length;
-    }
-    return length;
-}
+static const char *const application_commands[] = {
+    "find-file",
+    "switch-to-buffer",
+    "kill-buffer",
+    "save-buffer",
+    "save-buffers-kill-terminal",
+    "isearch-forward",
+};
 
-static void consider_command_completion(const KmCommandLoop *loop,
-                                        const char *candidate,
-                                        const char **first,
-                                        size_t *common_len,
-                                        size_t *matches)
+static void clear_completions(KmCommandLoop *loop)
 {
-    size_t candidate_len = strlen(candidate);
-    if (candidate_len < loop->prompt_len ||
-        (loop->prompt_len != 0 &&
-         memcmp(candidate, loop->prompt_text, loop->prompt_len) != 0)) {
-        return;
-    }
-    if (*matches == 0) {
-        *first = candidate;
-        *common_len = strlen(candidate);
-    } else {
-        size_t candidate_common = common_ascii_prefix(*first, candidate);
-        if (candidate_common < *common_len) *common_len = candidate_common;
-    }
-    ++*matches;
-}
-
-static KmStatus complete_command(KmCommandLoop *loop, KmError *error)
-{
-    static const char *const application_commands[] = {
-        "find-file",
-        "switch-to-buffer",
-        "kill-buffer",
-        "save-buffer",
-        "save-buffers-kill-terminal",
-        "isearch-forward",
-    };
-    const char *first = NULL;
-    size_t common_len = 0;
-    size_t matches = 0;
     size_t i;
-    char *completion;
-    KmStatus status;
 
+    for (i = 0; i < loop->completion_count; ++i) {
+        free(loop->completions[i]);
+    }
+    free(loop->completions);
+    free(loop->completion_common);
+    loop->completions = NULL;
+    loop->completion_count = 0;
+    loop->completion_index = 0;
+    loop->completion_common = NULL;
+}
+
+static size_t utf8_common_prefix(const char *left, const char *right)
+{
+    size_t left_len = strlen(left);
+    size_t right_len = strlen(right);
+    size_t common = left_len < right_len ? left_len : right_len;
+    size_t offset = 0;
+
+    while (offset < common && left[offset] == right[offset]) ++offset;
+    common = offset;
+    while (common != 0 && common < left_len &&
+           ((unsigned char)left[common] & 0xc0u) == 0x80u) {
+        --common;
+    }
+    return common;
+}
+
+static int compare_completions(const void *left, const void *right)
+{
+    const char *const *a = (const char *const *)left;
+    const char *const *b = (const char *const *)right;
+    return strcmp(*a, *b);
+}
+
+static KmStatus replace_completions(KmCommandLoop *loop,
+                                    const char *const *items, size_t count,
+                                    const char *common, KmError *error)
+{
+    char **copies = NULL;
+    char *common_copy = NULL;
+    size_t common_len = 0;
+    size_t i;
+
+    if (count > SIZE_MAX / sizeof(*copies)) {
+        return fail(error, KM_ERR_OOM, "minibuffer completions");
+    }
+    if (count != 0) {
+        copies = (char **)calloc(count, sizeof(*copies));
+        if (copies == NULL) {
+            return fail(error, KM_ERR_OOM, "minibuffer completions");
+        }
+    }
+    for (i = 0; i < count; ++i) {
+        size_t len;
+        if (items == NULL || items[i] == NULL ||
+            !valid_prompt_text((const uint8_t *)items[i], strlen(items[i]))) {
+            goto invalid;
+        }
+        len = strlen(items[i]);
+        copies[i] = (char *)malloc(len + 1);
+        if (copies[i] == NULL) goto oom;
+        memcpy(copies[i], items[i], len + 1);
+    }
+    if (count != 0) {
+        qsort(copies, count, sizeof(*copies), compare_completions);
+        common_len = strlen(copies[0]);
+        for (i = 1; i < count; ++i) {
+            size_t candidate_common = utf8_common_prefix(copies[0], copies[i]);
+            if (candidate_common < common_len) common_len = candidate_common;
+        }
+    }
+    if (common != NULL) {
+        if (!valid_prompt_text((const uint8_t *)common, strlen(common))) {
+            goto invalid;
+        }
+        common_len = strlen(common);
+        common_copy = (char *)malloc(common_len + 1);
+        if (common_copy == NULL) goto oom;
+        memcpy(common_copy, common, common_len + 1);
+    } else if (count != 0) {
+        common_copy = (char *)malloc(common_len + 1);
+        if (common_copy == NULL) goto oom;
+        memcpy(common_copy, copies[0], common_len);
+        common_copy[common_len] = '\0';
+    }
+    clear_completions(loop);
+    loop->completions = copies;
+    loop->completion_count = count;
+    loop->completion_common = common_copy;
+    return KM_OK;
+
+invalid:
+    for (i = 0; i < count; ++i) free(copies[i]);
+    free(copies);
+    free(common_copy);
+    return fail(error, KM_ERR_INVALID, "minibuffer completions");
+
+oom:
+    for (i = 0; i < count; ++i) free(copies[i]);
+    free(copies);
+    free(common_copy);
+    return fail(error, KM_ERR_OOM, "minibuffer completions");
+}
+
+static KmStatus refresh_prompt_completions(KmCommandLoop *loop,
+                                           KmError *error)
+{
+    const char *matches[sizeof(command_registry) / sizeof(command_registry[0]) +
+                        sizeof(application_commands) /
+                            sizeof(application_commands[0])];
+    size_t count = 0;
+    size_t i;
+
+    clear_completions(loop);
+    if (loop->prompt_kind == KM_PROMPT_FIND_FILE ||
+        loop->prompt_kind == KM_PROMPT_SWITCH_BUFFER) {
+        loop->request = loop->prompt_kind == KM_PROMPT_FIND_FILE
+                            ? KM_COMMAND_REQUEST_COMPLETE_FILE
+                            : KM_COMMAND_REQUEST_COMPLETE_BUFFER;
+        return KM_OK;
+    }
+    if (loop->prompt_kind != KM_PROMPT_COMMAND) return KM_OK;
     for (i = 0; i < sizeof(command_registry) / sizeof(command_registry[0]); ++i) {
-        consider_command_completion(loop, command_registry[i].name, &first,
-                                    &common_len, &matches);
+        const char *candidate = command_registry[i].name;
+        size_t len = strlen(candidate);
+        if (len >= loop->prompt_len &&
+            (loop->prompt_len == 0 ||
+             memcmp(candidate, loop->prompt_text, loop->prompt_len) == 0)) {
+            matches[count++] = candidate;
+        }
     }
     for (i = 0; i < sizeof(application_commands) /
                         sizeof(application_commands[0]); ++i) {
-        consider_command_completion(loop, application_commands[i], &first,
-                                    &common_len, &matches);
+        const char *candidate = application_commands[i];
+        size_t len = strlen(candidate);
+        if (len >= loop->prompt_len &&
+            (loop->prompt_len == 0 ||
+             memcmp(candidate, loop->prompt_text, loop->prompt_len) == 0)) {
+            matches[count++] = candidate;
+        }
     }
-    if (matches == 0 || common_len == loop->prompt_len) return KM_OK;
-    completion = (char *)malloc(common_len + 1);
-    if (completion == NULL) return fail(error, KM_ERR_OOM, "complete command");
-    memcpy(completion, first, common_len);
-    completion[common_len] = '\0';
-    status = replace_prompt_text(loop, completion, error);
-    free(completion);
-    return status;
+    return replace_completions(loop, matches, count, NULL, error);
+}
+
+static KmStatus complete_prompt(KmCommandLoop *loop, KmError *error)
+{
+    KmStatus status;
+
+    if (loop->completion_common == NULL ||
+        strlen(loop->completion_common) <= loop->prompt_len) {
+        return KM_OK;
+    }
+    status = replace_prompt_text(loop, loop->completion_common, error);
+    if (status != KM_OK) return status;
+    return refresh_prompt_completions(loop, error);
 }
 
 static KmStatus execute_named_command(KmCommandLoop *loop, KmView *view,
@@ -1892,13 +2001,13 @@ static KmStatus execute_named_command(KmCommandLoop *loop, KmView *view,
         loop->prompt_kind = KM_PROMPT_FIND_FILE;
         loop->prompt_len = 0;
         loop->prompt_text[0] = '\0';
-        return KM_OK;
+        return refresh_prompt_completions(loop, error);
     }
     if (prompt_is(loop, "switch-to-buffer")) {
         loop->prompt_kind = KM_PROMPT_SWITCH_BUFFER;
         loop->prompt_len = 0;
         loop->prompt_text[0] = '\0';
-        return KM_OK;
+        return refresh_prompt_completions(loop, error);
     }
     if (prompt_is(loop, "kill-buffer")) {
         loop->prompt_kind = KM_PROMPT_NONE;
@@ -1941,6 +2050,70 @@ static KmStatus execute_named_command(KmCommandLoop *loop, KmView *view,
     return fail(error, KM_ERR_INVALID, "unknown command");
 }
 
+static bool prompt_ends_in_separator(const KmCommandLoop *loop)
+{
+    if (loop->prompt_len == 0) return false;
+    return loop->prompt_text[loop->prompt_len - 1] == '/' ||
+           loop->prompt_text[loop->prompt_len - 1] == '\\';
+}
+
+static void cycle_completion(KmCommandLoop *loop, bool forward)
+{
+    if (loop->completion_count < 2) return;
+    if (forward) {
+        loop->completion_index =
+            (loop->completion_index + 1) % loop->completion_count;
+    } else {
+        loop->completion_index = loop->completion_index == 0
+                                     ? loop->completion_count - 1
+                                     : loop->completion_index - 1;
+    }
+}
+
+static KmStatus fido_backspace(KmCommandLoop *loop, KmError *error)
+{
+    if (loop->prompt_kind == KM_PROMPT_FIND_FILE &&
+        prompt_ends_in_separator(loop) &&
+        !(loop->prompt_len == 1 ||
+          (loop->prompt_len == 3 && loop->prompt_text[1] == ':'))) {
+        --loop->prompt_len;
+        while (loop->prompt_len != 0 &&
+               loop->prompt_text[loop->prompt_len - 1] != '/' &&
+               loop->prompt_text[loop->prompt_len - 1] != '\\') {
+            --loop->prompt_len;
+        }
+        loop->prompt_text[loop->prompt_len] = '\0';
+    } else {
+        prompt_backspace(loop);
+    }
+    return refresh_prompt_completions(loop, error);
+}
+
+static KmStatus accept_prompt(KmCommandLoop *loop, KmView *view,
+                              bool use_completion, KmError *error)
+{
+    if (use_completion && loop->completion_count != 0) {
+        const char *selected = loop->completions[loop->completion_index];
+        KmStatus status = replace_prompt_text(loop, selected, error);
+        if (status != KM_OK) return status;
+        if (loop->prompt_kind == KM_PROMPT_FIND_FILE &&
+            prompt_ends_in_separator(loop)) {
+            return refresh_prompt_completions(loop, error);
+        }
+    }
+    if (loop->prompt_kind == KM_PROMPT_COMMAND) {
+        return execute_named_command(loop, view, error);
+    }
+    if (loop->prompt_kind == KM_PROMPT_FIND_FILE && loop->prompt_len == 0) {
+        return fail(error, KM_ERR_INVALID, "file name empty");
+    }
+    loop->request = loop->prompt_kind == KM_PROMPT_FIND_FILE
+                        ? KM_COMMAND_REQUEST_FIND_FILE
+                        : KM_COMMAND_REQUEST_SWITCH_BUFFER;
+    loop->prompt_kind = KM_PROMPT_NONE;
+    return KM_OK;
+}
+
 static KmStatus dispatch_prompt(KmCommandLoop *loop, KmView *view,
                                 const KmEvent *event, KmError *error)
 {
@@ -1951,50 +2124,65 @@ static KmStatus dispatch_prompt(KmCommandLoop *loop, KmView *view,
     if (event->kind == KM_EVENT_KEY &&
         is_quit_key(event->codepoint, event->modifiers)) {
         loop->prompt_kind = KM_PROMPT_NONE;
+        if (loop->request == KM_COMMAND_REQUEST_COMPLETE_FILE ||
+            loop->request == KM_COMMAND_REQUEST_COMPLETE_BUFFER) {
+            loop->request = KM_COMMAND_REQUEST_NONE;
+        }
         loop->quit_requested = true;
         return KM_OK;
     }
     if (event->kind == KM_EVENT_KEY && event->codepoint == 0x7f &&
         event->modifiers == 0) {
-        prompt_backspace(loop);
+        return fido_backspace(loop, error);
+    }
+    if (event->kind == KM_EVENT_KEY && event->codepoint == 'k' &&
+        event->modifiers == KM_MOD_CTRL) {
+        loop->prompt_len = 0;
+        if (loop->prompt_text != NULL) loop->prompt_text[0] = '\0';
+        return refresh_prompt_completions(loop, error);
+    }
+    if (event->kind == KM_EVENT_KEY &&
+        ((event->codepoint == KM_KEY_RIGHT && event->modifiers == 0) ||
+         (event->codepoint == 's' && event->modifiers == KM_MOD_CTRL))) {
+        cycle_completion(loop, true);
+        return KM_OK;
+    }
+    if (event->kind == KM_EVENT_KEY &&
+        ((event->codepoint == KM_KEY_LEFT && event->modifiers == 0) ||
+         (event->codepoint == 'r' && event->modifiers == KM_MOD_CTRL))) {
+        cycle_completion(loop, false);
         return KM_OK;
     }
     if (event->kind == KM_EVENT_KEY && event->codepoint == KM_KEY_TAB &&
         event->modifiers == 0) {
-        if (loop->prompt_kind == KM_PROMPT_COMMAND) {
-            return complete_command(loop, error);
-        }
-        loop->request = loop->prompt_kind == KM_PROMPT_FIND_FILE
-                            ? KM_COMMAND_REQUEST_COMPLETE_FILE
-                            : KM_COMMAND_REQUEST_COMPLETE_BUFFER;
-        return KM_OK;
+        return complete_prompt(loop, error);
+    }
+    if (event->kind == KM_EVENT_KEY && event->codepoint == 'j' &&
+        event->modifiers == KM_MOD_ALT) {
+        return accept_prompt(loop, view, false, error);
     }
     if (event->kind == KM_EVENT_TEXT && event->text == NULL &&
         event->text_len == 0 && event->codepoint == '\n') {
-        if (loop->prompt_kind == KM_PROMPT_COMMAND) {
-            return execute_named_command(loop, view, error);
-        }
-        if (loop->prompt_kind == KM_PROMPT_FIND_FILE && loop->prompt_len == 0) {
-            return fail(error, KM_ERR_INVALID, "file name empty");
-        }
-        loop->request = loop->prompt_kind == KM_PROMPT_FIND_FILE
-                            ? KM_COMMAND_REQUEST_FIND_FILE
-                            : KM_COMMAND_REQUEST_SWITCH_BUFFER;
-        loop->prompt_kind = KM_PROMPT_NONE;
-        return KM_OK;
+        return accept_prompt(loop, view, true, error);
     }
     if (event->kind == KM_EVENT_PASTE) {
-        return append_prompt_text(loop, event->text, event->text_len, error);
+        KmStatus status =
+            append_prompt_text(loop, event->text, event->text_len, error);
+        return status == KM_OK ? refresh_prompt_completions(loop, error)
+                               : status;
     }
     if (event->kind == KM_EVENT_TEXT) {
+        KmStatus status;
         if (event->text != NULL || event->text_len != 0) {
-            return append_prompt_text(loop, event->text, event->text_len,
-                                      error);
+            status = append_prompt_text(loop, event->text, event->text_len,
+                                        error);
         } else {
             uint8_t bytes[4];
             size_t len = encode_scalar(event->codepoint, bytes);
-            return append_prompt_text(loop, bytes, len, error);
+            status = append_prompt_text(loop, bytes, len, error);
         }
+        return status == KM_OK ? refresh_prompt_completions(loop, error)
+                               : status;
     }
     return fail(error, KM_ERR_INVALID, "minibuffer key");
 }
@@ -2241,10 +2429,17 @@ static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
         return KM_OK;
     }
     if (key_trie[node].command == KM_INTERNAL_FIND_FILE) {
-        return begin_prompt(loop, KM_PROMPT_FIND_FILE, error);
+        KmStatus prompt_status = begin_prompt(loop, KM_PROMPT_FIND_FILE, error);
+        return prompt_status == KM_OK
+                   ? refresh_prompt_completions(loop, error)
+                   : prompt_status;
     }
     if (key_trie[node].command == KM_INTERNAL_SWITCH_BUFFER) {
-        return begin_prompt(loop, KM_PROMPT_SWITCH_BUFFER, error);
+        KmStatus prompt_status =
+            begin_prompt(loop, KM_PROMPT_SWITCH_BUFFER, error);
+        return prompt_status == KM_OK
+                   ? refresh_prompt_completions(loop, error)
+                   : prompt_status;
     }
     if (key_trie[node].command == KM_INTERNAL_KILL_BUFFER) {
         reset_command_input(loop);
@@ -2265,6 +2460,7 @@ static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
             loop->prompt_argument = argument;
             loop->prompt_has_argument = has_argument;
             loop->prompt_page_opposite = page_opposite;
+            prompt_status = refresh_prompt_completions(loop, error);
         }
         return prompt_status;
     }
@@ -2292,6 +2488,7 @@ KmStatus km_command_loop_create(KmCommandLoop **out_loop, KmError *error)
 void km_command_loop_destroy(KmCommandLoop *loop)
 {
     if (loop != NULL) {
+        clear_completions(loop);
         free(loop->prompt_text);
         free(loop->search_query);
         free(loop->kill);
@@ -2319,9 +2516,16 @@ KmStatus km_command_loop_dispatch(KmCommandLoop *loop, KmView *view,
                  ? event->repeat
                  : 1;
     for (i = 0; i < repeat; ++i) {
+        KmPromptKind prompt_kind = loop->prompt_kind;
         status = dispatch_one(loop, view, event, error);
         if (status != KM_OK) return status;
-        if (loop->request != KM_COMMAND_REQUEST_NONE) break;
+        if (loop->prompt_kind != prompt_kind) break;
+        if (loop->request != KM_COMMAND_REQUEST_NONE &&
+            !((loop->request == KM_COMMAND_REQUEST_COMPLETE_FILE ||
+               loop->request == KM_COMMAND_REQUEST_COMPLETE_BUFFER) &&
+              event->kind == KM_EVENT_TEXT && event->codepoint != '\n')) {
+            break;
+        }
     }
     return KM_OK;
 }
@@ -2381,13 +2585,48 @@ void km_command_loop_clear_request(KmCommandLoop *loop)
 KmStatus km_command_loop_set_prompt_text(KmCommandLoop *loop,
                                          const char *text, KmError *error)
 {
+    KmStatus status;
+
     km_error_clear(error);
     if (loop == NULL || loop->prompt_kind == KM_PROMPT_NONE ||
         loop->prompt_kind == KM_PROMPT_CONFIRM_KILL ||
         loop->prompt_kind == KM_PROMPT_CONFIRM_EXIT) {
         return fail(error, KM_ERR_INVALID, "set minibuffer text");
     }
-    return replace_prompt_text(loop, text, error);
+    status = replace_prompt_text(loop, text, error);
+    return status == KM_OK ? refresh_prompt_completions(loop, error) : status;
+}
+
+KmStatus km_command_loop_set_completions(KmCommandLoop *loop,
+                                         const char *const *items,
+                                         size_t count, const char *common,
+                                         KmError *error)
+{
+    km_error_clear(error);
+    if (loop == NULL ||
+        (loop->prompt_kind != KM_PROMPT_FIND_FILE &&
+         loop->prompt_kind != KM_PROMPT_SWITCH_BUFFER)) {
+        return fail(error, KM_ERR_INVALID, "set minibuffer completions");
+    }
+    return replace_completions(loop, items, count, common, error);
+}
+
+KmStatus km_command_loop_select_completion(KmCommandLoop *loop,
+                                           const char *item, KmError *error)
+{
+    size_t i;
+
+    km_error_clear(error);
+    if (loop == NULL || item == NULL) {
+        return fail(error, KM_ERR_INVALID, "select minibuffer completion");
+    }
+    for (i = 0; i < loop->completion_count; ++i) {
+        if (strcmp(loop->completions[i], item) == 0) {
+            loop->completion_index = i;
+            return KM_OK;
+        }
+    }
+    return fail(error, KM_ERR_INVALID, "select minibuffer completion");
 }
 
 KmStatus km_command_loop_confirm_exit(KmCommandLoop *loop, KmError *error)
@@ -2470,4 +2709,63 @@ void km_command_loop_format_prompt(const KmCommandLoop *loop,
         offset += consumed;
     }
     destination[used] = '\0';
+}
+
+static void append_completion_display(char *destination, size_t capacity,
+                                      size_t *used, const char *text)
+{
+    size_t len = strlen(text);
+    if (*used >= capacity - 1) return;
+    if (len > capacity - *used - 1) len = capacity - *used - 1;
+    while (len != 0 &&
+           ((unsigned char)text[len] & 0xc0u) == 0x80u) {
+        --len;
+    }
+    memcpy(destination + *used, text, len);
+    *used += len;
+    destination[*used] = '\0';
+}
+
+void km_command_loop_format_completions(const KmCommandLoop *loop,
+                                        char *destination, size_t capacity)
+{
+    size_t used = 0;
+    size_t i;
+
+    if (destination == NULL || capacity == 0) return;
+    destination[0] = '\0';
+    if (loop == NULL ||
+        (loop->prompt_kind != KM_PROMPT_FIND_FILE &&
+         loop->prompt_kind != KM_PROMPT_SWITCH_BUFFER &&
+         loop->prompt_kind != KM_PROMPT_COMMAND)) {
+        return;
+    }
+    if (loop->completion_count == 0) {
+        append_completion_display(destination, capacity, &used,
+                                  " [No matches]");
+        return;
+    }
+    if (loop->completion_common != NULL &&
+        strlen(loop->completion_common) > loop->prompt_len &&
+        memcmp(loop->completion_common, loop->prompt_text,
+               loop->prompt_len) == 0) {
+        append_completion_display(destination, capacity, &used, " [");
+        append_completion_display(destination, capacity, &used,
+                                  loop->completion_common + loop->prompt_len);
+        append_completion_display(destination, capacity, &used, "]");
+    }
+    if (loop->completion_count == 1) {
+        append_completion_display(destination, capacity, &used, " [Matched]");
+        return;
+    }
+    append_completion_display(destination, capacity, &used, " {");
+    for (i = 0; i < loop->completion_count; ++i) {
+        size_t index = (loop->completion_index + i) % loop->completion_count;
+        if (i != 0) {
+            append_completion_display(destination, capacity, &used, " | ");
+        }
+        append_completion_display(destination, capacity, &used,
+                                  loop->completions[index]);
+    }
+    append_completion_display(destination, capacity, &used, "}");
 }

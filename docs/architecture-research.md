@@ -51,9 +51,13 @@
   `switch-to-buffer`、`kill-buffer`、`save-buffer` 和
   `save-buffers-kill-terminal`；后者先保存全部 modified visited Buffer，任一
   保存失败保持会话打开。
-- minibuffer 的 Tab 对 `M-x`、Buffer 名和文件路径执行确定性的最长公共前缀
-  补全；唯一目录补全追加路径分隔符。POSIX 中无法由当前 UTF-8 minibuffer
-  无损输入的非 UTF-8/control 文件名会被补全枚举跳过。
+- minibuffer 对 `M-x`、Buffer 名和文件路径实时显示单行 Fido 风格候选：
+  多候选使用 `{a | b}`，确定部分和唯一匹配使用 `[...]` / `[Matched]`。
+  `C-s`/右方向键和 `C-r`/左方向键循环候选，`RET` 接受当前首项，`M-j`
+  保留原输入，Tab 执行确定性的最长公共前缀补全。文件目录候选追加路径分隔符，
+  `RET` 进入目录，目录末尾的 DEL 返回上一级。第一版仍是前缀匹配，不做
+  flex/fuzzy；POSIX 中无法由 UTF-8 minibuffer 无损输入的非 UTF-8/control
+  文件名会被候选枚举跳过。
 - 正文显示 document-global logical line number gutter；soft-wrap continuation
   gutter 留空。行号宽度参与两次 layout pass 的 wrap/cursor/scroll 计算，终端
   太窄时优先保留一个正文 cell。mode line 使用独立的 bold+reverse style，
