@@ -460,6 +460,21 @@ const char *km_file_display_name(const KmFile *file)
     return file == NULL || file->path == NULL ? "" : file->path->display;
 }
 
+bool km_file_same_target(const KmFile *left, const KmFile *right)
+{
+    if (left == NULL || right == NULL || left->path == NULL ||
+        right->path == NULL || left->exists != right->exists) {
+        return false;
+    }
+    if (left->exists) {
+        return left->identity.volume == right->identity.volume &&
+               left->identity.index_high == right->identity.index_high &&
+               left->identity.index_low == right->identity.index_low;
+    }
+    return CompareStringOrdinal(left->path->wide, -1, right->path->wide, -1,
+                                FALSE) == CSTR_EQUAL;
+}
+
 static KmStatus write_all(HANDLE handle, const uint8_t *bytes, size_t len,
                           KmError *error)
 {

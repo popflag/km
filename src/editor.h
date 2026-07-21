@@ -12,6 +12,17 @@ typedef struct KmCommandLoop KmCommandLoop;
 typedef struct KmFile KmFile;
 
 typedef enum {
+    KM_COMMAND_REQUEST_NONE = 0,
+    KM_COMMAND_REQUEST_SAVE,
+    KM_COMMAND_REQUEST_SAVE_ALL_EXIT,
+    KM_COMMAND_REQUEST_EXIT,
+    KM_COMMAND_REQUEST_EXIT_CONFIRMED,
+    KM_COMMAND_REQUEST_FIND_FILE,
+    KM_COMMAND_REQUEST_SWITCH_BUFFER,
+    KM_COMMAND_REQUEST_KILL_BUFFER
+} KmCommandRequest;
+
+typedef enum {
     KM_COMMAND_NONE = 0,
     KM_COMMAND_INSERT_UTF8_BLOCK,
     KM_COMMAND_PASTE,
@@ -55,11 +66,16 @@ bool km_buffer_is_modified(const KmBuffer *buffer);
 bool km_buffer_is_visited(const KmBuffer *buffer);
 KmStatus km_buffer_save(KmBuffer *buffer, KmError *error);
 const char *km_buffer_name(const KmBuffer *buffer);
+KmStatus km_buffer_set_name(KmBuffer *buffer, const char *name,
+                            KmError *error);
+bool km_buffer_visits_same_file(const KmBuffer *left, const KmBuffer *right);
 bool km_buffer_mark_active(const KmBuffer *buffer);
 KmBytePos km_buffer_mark(const KmBuffer *buffer);
 
 KmStatus km_view_create(KmBuffer *buffer, KmView **out_view, KmError *error);
 KmStatus km_view_destroy(KmView *view, KmError *error);
+KmBuffer *km_view_buffer(const KmView *view);
+KmStatus km_view_set_buffer(KmView *view, KmBuffer *buffer, KmError *error);
 KmBytePos km_view_point(const KmView *view);
 KmStatus km_view_set_point(KmView *view, KmBytePos point, KmError *error);
 
@@ -83,11 +99,12 @@ KmStatus km_command_loop_dispatch(KmCommandLoop *loop, KmView *view,
 KmCommandId km_command_loop_last_command(const KmCommandLoop *loop);
 bool km_command_loop_quit_requested(const KmCommandLoop *loop);
 void km_command_loop_clear_quit(KmCommandLoop *loop);
-bool km_command_loop_exit_requested(const KmCommandLoop *loop);
-bool km_command_loop_save_requested(const KmCommandLoop *loop);
-void km_command_loop_clear_save(KmCommandLoop *loop);
-void km_command_loop_clear_exit(KmCommandLoop *loop);
+KmCommandRequest km_command_loop_request(const KmCommandLoop *loop);
+const char *km_command_loop_request_text(const KmCommandLoop *loop);
+void km_command_loop_clear_request(KmCommandLoop *loop);
+KmStatus km_command_loop_confirm_exit(KmCommandLoop *loop, KmError *error);
 bool km_command_loop_search_active(const KmCommandLoop *loop);
+bool km_command_loop_prompt_active(const KmCommandLoop *loop);
 void km_command_loop_format_prompt(const KmCommandLoop *loop,
                                    char *destination, size_t capacity);
 

@@ -16,6 +16,8 @@ KmStatus km_file_load(KmPath *path, KmFile **out_file, uint8_t **out_text,
                       size_t *out_len, KmError *error);
 void km_file_destroy(KmFile *file);
 const char *km_file_display_name(const KmFile *file);
+/* Existing targets compare file identity; missing targets compare path spelling. */
+bool km_file_same_target(const KmFile *left, const KmFile *right);
 KmStatus km_file_save(KmFile *file, const KmDocument *document,
                       KmError *error);
 

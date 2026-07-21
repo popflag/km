@@ -53,7 +53,26 @@ static int wait_for_text(int master, char *output, size_t cap, size_t *length,
     return strstr(output, text) == NULL ? -1 : 0;
 }
 
-static int run_probe(int terminate_with_signal, const char *path)
+static int write_bytes(int descriptor, const void *bytes, size_t len)
+{
+    const char *data = (const char *)bytes;
+    size_t offset = 0;
+
+    while (offset < len) {
+        ssize_t written = write(descriptor, data + offset, len - offset);
+        if (written > 0) {
+            offset += (size_t)written;
+        } else if (written < 0 && errno == EINTR) {
+            continue;
+        } else {
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int run_probe(int terminate_with_signal, const char *path,
+                     const char *second_path)
 {
     int master = -1;
     int slave = -1;
@@ -62,7 +81,7 @@ static int run_probe(int terminate_with_signal, const char *path)
     struct termios after;
     struct winsize size = {37, 91, 0, 0};
     pid_t child;
-    char output[8192] = {0};
+    char output[32768] = {0};
     size_t output_len = 0;
     int status = 0;
     int iteration;
@@ -108,7 +127,7 @@ static int run_probe(int terminate_with_signal, const char *path)
             'a', 'b', 'c', 0x02, 0x04, 0x7f,
             0x18, 'u', 0x18, 0x12,
             '\r', 0xe4, 0xb8, 0xad, 0x07, 'q',
-            0x18, 0x03, 0x18, 0x03,
+            0x18, 0x03, 'y',
         };
         if (write(master, edit, sizeof(edit)) != (ssize_t)sizeof(edit)) {
             goto kill_child;
@@ -117,12 +136,12 @@ static int run_probe(int terminate_with_signal, const char *path)
                           "\x1b[1;1Ha\x1b[2;1H\xe4\xb8\xadq", 2000) != 0) {
             goto kill_child;
         }
-    } else {
+    } else if (second_path == NULL) {
         static const unsigned char edit[] = {
             0x1b, '[', 'B', 0x1b, '[', 'C', 0x00, 0x1b, '[', 'C',
             0x17, 0x19, 0xe4, 0xb8, 0xad, 0x18, 0x13,
         };
-        static const unsigned char exit_keys[] = {0x18, 0x03};
+        static const unsigned char exit_keys[] = {0x18, 'k', 0x18, 0x03};
         if (write(master, edit, sizeof(edit)) != (ssize_t)sizeof(edit)) {
             goto kill_child;
         }
@@ -130,6 +149,46 @@ static int run_probe(int terminate_with_signal, const char *path)
                           "Wrote", 2000) != 0 ||
             write(master, exit_keys, sizeof(exit_keys)) !=
                 (ssize_t)sizeof(exit_keys)) {
+            goto kill_child;
+        }
+    } else {
+        static const unsigned char find_file[] = {0x18, 0x06};
+        static const unsigned char paste_start[] = {0x1b, '[', '2', '0', '0', '~'};
+        static const unsigned char paste_end[] = {0x1b, '[', '2', '0', '1', '~'};
+        static const unsigned char open_second[] = {'\r'};
+        static const unsigned char edit_second[] = {'Q', 0x18, 'b'};
+        static const unsigned char edit_first[] = {'\r', '!', 0x18, 0x13};
+        static const unsigned char request_exit[] = {0x18, 0x03};
+        static const unsigned char extended_command[] = {'\r', 0x1b, 'x'};
+        static const char save_all[] = "save-buffers-kill-terminal";
+        if (write_bytes(master, find_file, sizeof(find_file)) != 0 ||
+            write_bytes(master, paste_start, sizeof(paste_start)) != 0 ||
+            write_bytes(master, second_path, strlen(second_path)) != 0 ||
+            write_bytes(master, paste_end, sizeof(paste_end)) != 0 ||
+            write_bytes(master, open_second, sizeof(open_second)) != 0 ||
+            wait_for_text(master, output, sizeof(output), &output_len,
+                          "Opened", 2000) != 0 ||
+            write_bytes(master, edit_second, sizeof(edit_second)) != 0 ||
+            write_bytes(master, paste_start, sizeof(paste_start)) != 0 ||
+            write_bytes(master, path, strlen(path)) != 0 ||
+            write_bytes(master, paste_end, sizeof(paste_end)) != 0 ||
+            write_bytes(master, edit_first, sizeof(edit_first)) != 0 ||
+            wait_for_text(master, output, sizeof(output), &output_len,
+                          "Wrote", 2000) != 0 ||
+            write_bytes(master, request_exit, sizeof(request_exit)) != 0 ||
+            wait_for_text(master, output, sizeof(output), &output_len,
+                          "Modified buffers exist", 2000) != 0 ||
+            write_bytes(master, "n", 1) != 0 ||
+            write_bytes(master, find_file, sizeof(find_file)) != 0 ||
+            write_bytes(master, paste_start, sizeof(paste_start)) != 0 ||
+            write_bytes(master, second_path, strlen(second_path)) != 0 ||
+            write_bytes(master, paste_end, sizeof(paste_end)) != 0 ||
+            write_bytes(master, extended_command,
+                        sizeof(extended_command)) != 0 ||
+            write_bytes(master, paste_start, sizeof(paste_start)) != 0 ||
+            write_bytes(master, save_all, sizeof(save_all) - 1) != 0 ||
+            write_bytes(master, paste_end, sizeof(paste_end)) != 0 ||
+            write_bytes(master, "\r", 1) != 0) {
             goto kill_child;
         }
     }
@@ -175,13 +234,18 @@ done:
 int main(void)
 {
     char path[] = "/tmp/km-pty-file-XXXXXX";
+    char first_path[] = "/tmp/km-pty-first-XXXXXX";
+    char second_path[] = "/tmp/km-pty-second-XXXXXX";
     static const char initial[] = "abc\nxyz";
     static const char expected[] = "abc\nxy\xe4\xb8\xadz";
+    static const char second_initial[] = "two";
+    static const char first_expected[] = "!abc\nxyz";
+    static const char second_expected[] = "Qtwo";
     char actual[32] = {0};
     int descriptor;
     ssize_t count;
 
-    if (run_probe(0, NULL) != 0) {
+    if (run_probe(0, NULL, NULL) != 0) {
         fprintf(stderr, "test_platform_pty: normal/resize probe failed: %s\n",
                 strerror(errno));
         return 1;
@@ -195,7 +259,7 @@ int main(void)
                 strerror(errno));
         return 1;
     }
-    if (run_probe(0, path) != 0) {
+    if (run_probe(0, path, NULL) != 0) {
         (void)unlink(path);
         fprintf(stderr, "test_platform_pty: file/save probe failed: %s\n",
                 strerror(errno));
@@ -210,7 +274,51 @@ int main(void)
         fprintf(stderr, "test_platform_pty: saved bytes were incorrect\n");
         return 1;
     }
-    if (run_probe(1, NULL) != 0) {
+    descriptor = mkstemp(first_path);
+    if (descriptor < 0 ||
+        write(descriptor, initial, sizeof(initial) - 1) !=
+            (ssize_t)(sizeof(initial) - 1) ||
+        close(descriptor) != 0) {
+        fprintf(stderr, "test_platform_pty: create first multi file failed\n");
+        return 1;
+    }
+    descriptor = mkstemp(second_path);
+    if (descriptor < 0 ||
+        write(descriptor, second_initial, sizeof(second_initial) - 1) !=
+            (ssize_t)(sizeof(second_initial) - 1) ||
+        close(descriptor) != 0) {
+        (void)unlink(first_path);
+        fprintf(stderr, "test_platform_pty: create second multi file failed\n");
+        return 1;
+    }
+    if (run_probe(0, first_path, second_path) != 0) {
+        (void)unlink(first_path);
+        (void)unlink(second_path);
+        fprintf(stderr, "test_platform_pty: multi-buffer probe failed\n");
+        return 1;
+    }
+    descriptor = open(first_path, O_RDONLY);
+    count = descriptor < 0 ? -1 : read(descriptor, actual, sizeof(actual));
+    if (descriptor >= 0) (void)close(descriptor);
+    if (count != (ssize_t)(sizeof(first_expected) - 1) ||
+        memcmp(actual, first_expected, sizeof(first_expected) - 1) != 0) {
+        (void)unlink(first_path);
+        (void)unlink(second_path);
+        fprintf(stderr, "test_platform_pty: first buffer save was incorrect\n");
+        return 1;
+    }
+    memset(actual, 0, sizeof(actual));
+    descriptor = open(second_path, O_RDONLY);
+    count = descriptor < 0 ? -1 : read(descriptor, actual, sizeof(actual));
+    if (descriptor >= 0) (void)close(descriptor);
+    (void)unlink(first_path);
+    (void)unlink(second_path);
+    if (count != (ssize_t)(sizeof(second_expected) - 1) ||
+        memcmp(actual, second_expected, sizeof(second_expected) - 1) != 0) {
+        fprintf(stderr, "test_platform_pty: second buffer save was incorrect\n");
+        return 1;
+    }
+    if (run_probe(1, NULL, NULL) != 0) {
         fprintf(stderr, "test_platform_pty: signal restore probe failed: %s\n",
                 strerror(errno));
         return 1;

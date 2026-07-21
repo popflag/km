@@ -26,13 +26,22 @@ int main(void)
     char directory[MAX_PATH];
     char path[MAX_PATH];
     char hard_link[MAX_PATH];
+    char alias_path[MAX_PATH];
+    char missing_lower[MAX_PATH];
+    char missing_upper[MAX_PATH];
     char temporary[MAX_PATH];
     KmPath *opaque = NULL;
     KmFile *file = NULL;
+    KmFile *alias_file = NULL;
+    KmFile *missing_file = NULL;
     KmBuffer *buffer = NULL;
     KmView *view = NULL;
     uint8_t *text = NULL;
     size_t len = 0;
+    size_t alias_len = 0;
+    uint8_t *alias_text = NULL;
+    size_t missing_len = 0;
+    uint8_t *missing_text = NULL;
     KmError error;
     FILE *stream;
     char actual[8] = {0};
@@ -48,6 +57,29 @@ int main(void)
     CHECK(fclose(stream) == 0);
     CHECK(km_path_from_utf8(path, &opaque, &error) == KM_OK);
     CHECK(km_file_load(opaque, &file, &text, &len, &error) == KM_OK);
+    CHECK(snprintf(alias_path, sizeof(alias_path), "%s\\.\\file.txt",
+                   temporary) > 0);
+    CHECK(km_path_from_utf8(alias_path, &opaque, &error) == KM_OK);
+    CHECK(km_file_load(opaque, &alias_file, &alias_text, &alias_len, &error) ==
+          KM_OK);
+    CHECK(km_file_same_target(file, alias_file));
+    free(alias_text);
+    km_file_destroy(alias_file);
+    CHECK(snprintf(missing_lower, sizeof(missing_lower), "%s\\missing.txt",
+                   temporary) > 0);
+    CHECK(snprintf(missing_upper, sizeof(missing_upper), "%s\\MISSING.txt",
+                   temporary) > 0);
+    CHECK(km_path_from_utf8(missing_lower, &opaque, &error) == KM_OK);
+    CHECK(km_file_load(opaque, &alias_file, &alias_text, &alias_len, &error) ==
+          KM_OK);
+    CHECK(km_path_from_utf8(missing_upper, &opaque, &error) == KM_OK);
+    CHECK(km_file_load(opaque, &missing_file, &missing_text, &missing_len,
+                       &error) == KM_OK);
+    CHECK(!km_file_same_target(alias_file, missing_file));
+    free(missing_text);
+    free(alias_text);
+    km_file_destroy(missing_file);
+    km_file_destroy(alias_file);
     CHECK(len == 2 && memcmp(text, "a\n", 2) == 0);
     CHECK(km_buffer_create_file(file, text, len, &buffer, &error) == KM_OK);
     free(text);
@@ -176,8 +208,10 @@ int main(void)
     char mixed[512];
     char link_path[512];
     char cr_path[512];
+    char alias_path[512];
     uint8_t disk[64];
     KmBuffer *buffer;
+    KmBuffer *alias_buffer;
     KmView *view = NULL;
     KmError error;
     KmPath *opaque = NULL;
@@ -192,9 +226,14 @@ int main(void)
     path_join(mixed, sizeof(mixed), directory, "mixed.txt");
     path_join(link_path, sizeof(link_path), directory, "link.txt");
     path_join(cr_path, sizeof(cr_path), directory, "cr.txt");
+    CHECK(snprintf(alias_path, sizeof(alias_path), "%s/./visited.txt",
+                   directory) > 0);
     write_bytes(path, disk_initial, sizeof(disk_initial));
 
     buffer = load_buffer(path, &error);
+    alias_buffer = load_buffer(alias_path, &error);
+    CHECK(km_buffer_visits_same_file(buffer, alias_buffer));
+    CHECK(km_buffer_destroy(alias_buffer, &error) == KM_OK);
     CHECK(km_buffer_is_visited(buffer));
     CHECK(strcmp(km_buffer_name(buffer), path) == 0);
     CHECK(!km_buffer_is_modified(buffer));

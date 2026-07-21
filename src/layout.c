@@ -345,7 +345,8 @@ static KmStatus put_status(KmCellGrid *grid, size_t row, size_t columns,
 
 KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
                         size_t rows, size_t columns, size_t scroll_row,
-                        const char *message, KmCellGrid **out_grid,
+                        const char *message, bool prompt_active,
+                        KmCellGrid **out_grid,
                         KmLayoutResult *out_result, KmError *error)
 {
     const KmDocument *document;
@@ -363,7 +364,8 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
 
     km_error_clear(error);
     if (out_grid == NULL || out_result == NULL || buffer == NULL ||
-        view == NULL || rows == 0 || columns == 0) {
+        view == NULL || km_view_buffer(view) != buffer || rows == 0 ||
+        columns == 0) {
         return fail(error, KM_ERR_INVALID, "layout view");
     }
     *out_grid = NULL;
@@ -421,7 +423,16 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     pass.region_end = mark.v < point.v ? point.v - start.v : mark.v - start.v;
     status = run_layout_pass(&pass, error);
     if (status != KM_OK) goto fail;
-    if (rows > 1) {
+    if (prompt_active) {
+        size_t prompt_column = 0;
+        status = put_status_text(grid, rows - 1, columns, &prompt_column,
+                                 message == NULL ? "" : message, error);
+        if (status != KM_OK) goto fail;
+        result.cursor_row = rows - 1;
+        result.cursor_column = prompt_column < columns
+                                   ? prompt_column
+                                   : columns - 1;
+    } else if (rows > 1) {
         status = put_status(grid, rows - 1, columns, &result,
                             km_buffer_is_modified(buffer),
                             km_buffer_name(buffer), km_buffer_mark_active(buffer),

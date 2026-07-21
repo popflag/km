@@ -402,6 +402,19 @@ const char *km_file_display_name(const KmFile *file)
     return file == NULL || file->path == NULL ? "" : file->path->display;
 }
 
+bool km_file_same_target(const KmFile *left, const KmFile *right)
+{
+    if (left == NULL || right == NULL || left->path == NULL ||
+        right->path == NULL || left->exists != right->exists) {
+        return false;
+    }
+    if (left->exists) {
+        return left->identity.device == right->identity.device &&
+               left->identity.inode == right->identity.inode;
+    }
+    return strcmp(left->path->bytes, right->path->bytes) == 0;
+}
+
 static KmStatus write_all(int descriptor, const uint8_t *bytes, size_t len,
                           KmError *error)
 {
