@@ -38,6 +38,21 @@ static int wait_for_output(int master, char *output, size_t cap,
     return 0;
 }
 
+static int wait_for_text(int master, char *output, size_t cap, size_t *length,
+                         const char *text, int timeout_ms)
+{
+    int elapsed = 0;
+
+    while (elapsed < timeout_ms) {
+        int slice = timeout_ms - elapsed;
+        if (strstr(output, text) != NULL) return 0;
+        if (slice > 100) slice = 100;
+        (void)wait_for_output(master, output, cap, length, slice);
+        elapsed += slice;
+    }
+    return strstr(output, text) == NULL ? -1 : 0;
+}
+
 static int run_probe(int terminate_with_signal)
 {
     int master = -1;
@@ -74,10 +89,12 @@ static int run_probe(int terminate_with_signal)
         _exit(127);
     }
 
-    if (wait_for_output(master, output, sizeof(output), &output_len, 2000) != 0)
+    if (wait_for_text(master, output, sizeof(output), &output_len,
+                      "km terminal probe", 2000) != 0)
         goto kill_child;
     if (ioctl(master, TIOCSWINSZ, &size) != 0) goto kill_child;
-    if (wait_for_output(master, output, sizeof(output), &output_len, 1000) != 0)
+    if (wait_for_text(master, output, sizeof(output), &output_len,
+                      "size: 91x37", 1000) != 0)
         goto kill_child;
     if (terminate_with_signal) {
         if (kill(child, SIGTERM) != 0) goto kill_child;

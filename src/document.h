@@ -8,6 +8,12 @@
 typedef struct KmDocument KmDocument;
 typedef struct KmAnchor KmAnchor;
 
+typedef struct {
+    const KmDocument *document;
+    KmRevision revision;
+    KmBytePos position;
+} KmTextIter;
+
 typedef enum {
     KM_ANCHOR_BEFORE = 0,
     KM_ANCHOR_AFTER
@@ -36,6 +42,11 @@ KmStateId km_document_history_state(const KmDocument *document);
 bool km_document_is_boundary(const KmDocument *document, KmBytePos position);
 KmStatus km_document_copy(const KmDocument *document, KmBytePos start,
                           size_t len, uint8_t *destination, KmError *error);
+KmStatus km_document_iter_init(const KmDocument *document, KmBytePos start,
+                               KmTextIter *out_iterator, KmError *error);
+KmStatus km_text_iter_read(KmTextIter *iterator, uint8_t *destination,
+                           size_t capacity, size_t *out_len, bool *out_eof,
+                           KmError *error);
 
 KmStatus km_anchor_create(KmDocument *document, KmBytePos position,
                           KmAnchorAffinity affinity, KmAnchor **out_anchor,

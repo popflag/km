@@ -719,6 +719,60 @@ KmStatus km_document_copy(const KmDocument *document, KmBytePos start,
     return KM_OK;
 }
 
+KmStatus km_document_iter_init(const KmDocument *document, KmBytePos start,
+                               KmTextIter *out_iterator, KmError *error) {
+    km_error_clear(error);
+    if (out_iterator == NULL) {
+        return fail(error, KM_ERR_INVALID, "document iterator");
+    }
+    *out_iterator = (KmTextIter){0};
+    if (document == NULL || !is_boundary(document, start.v)) {
+        return fail(error, KM_ERR_INVALID, "document iterator");
+    }
+    out_iterator->document = document;
+    out_iterator->revision = document->revision;
+    out_iterator->position = start;
+    return KM_OK;
+}
+
+KmStatus km_text_iter_read(KmTextIter *iterator, uint8_t *destination,
+                           size_t capacity, size_t *out_len, bool *out_eof,
+                           KmError *error) {
+    const KmDocument *document;
+    size_t available;
+    size_t count;
+    KmStatus status;
+
+    km_error_clear(error);
+    if (out_len != NULL) *out_len = 0;
+    if (out_eof != NULL) *out_eof = false;
+    if (iterator == NULL || out_len == NULL || out_eof == NULL ||
+        (capacity != 0 && destination == NULL)) {
+        return fail(error, KM_ERR_INVALID, "document iterator read");
+    }
+    document = iterator->document;
+    if (document == NULL) {
+        return fail(error, KM_ERR_INVALID, "document iterator read");
+    }
+    if (iterator->revision != document->revision) {
+        return fail(error, KM_ERR_CONFLICT, "document iterator read");
+    }
+    if (iterator->position.v > text_len(document)) {
+        return fail(error, KM_ERR_INVALID, "document iterator read");
+    }
+    available = text_len(document) - iterator->position.v;
+    count = capacity < available ? capacity : available;
+    status = km_document_copy(document, iterator->position, count,
+                              destination, error);
+    if (status != KM_OK) {
+        return status;
+    }
+    iterator->position.v += count;
+    *out_len = count;
+    *out_eof = iterator->position.v == text_len(document);
+    return KM_OK;
+}
+
 KmStatus km_anchor_create(KmDocument *document, KmBytePos position,
                           KmAnchorAffinity affinity, KmAnchor **out_anchor,
                           KmError *error) {

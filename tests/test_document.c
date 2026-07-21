@@ -335,6 +335,192 @@ static void model_apply_batch(uint8_t *model, size_t *model_len,
     }
 }
 
+static void test_logical_iterator(void) {
+    static const uint8_t initial[] = "abcdef";
+    static const uint8_t inserted[] = "XY";
+    static const uint8_t expected[] = "abcXYXYdef";
+    KmDocument *document = make_document(initial, sizeof(initial) - 1);
+    KmTextIter iterator;
+    KmError error;
+    KmSplice splice = {{3}, {3}, inserted, sizeof(inserted) - 1, 0};
+    uint8_t bytes[2];
+    size_t count;
+    bool eof;
+
+    CHECK(apply(document, &splice, 1) == KM_OK);
+    CHECK(km_document_iter_init(document, (KmBytePos){2}, &iterator,
+                                &error) == KM_OK);
+    CHECK(km_text_iter_read(&iterator, bytes, sizeof(bytes), &count, &eof,
+                            &error) == KM_OK);
+    CHECK(count == 2 && !eof && memcmp(bytes, "cX", 2) == 0);
+    CHECK(km_text_iter_read(&iterator, bytes, sizeof(bytes), &count, &eof,
+                            &error) == KM_OK);
+    CHECK(count == 2 && !eof && memcmp(bytes, "Yd", 2) == 0);
+    CHECK(km_text_iter_read(&iterator, bytes, sizeof(bytes), &count, &eof,
+                            &error) == KM_OK);
+    CHECK(count == 2 && eof && memcmp(bytes, "ef", 2) == 0);
+    CHECK(km_text_iter_read(&iterator, NULL, 0, &count, &eof, &error) ==
+          KM_OK);
+    CHECK(count == 0 && eof);
+
+    CHECK(km_document_iter_init(document, (KmBytePos){0}, &iterator,
+                                &error) == KM_OK);
+    CHECK(km_document_apply(document, &splice, 1,
+                            (KmTxnMeta){km_document_revision(document), 1},
+                            &error) == KM_OK);
+    CHECK(km_text_iter_read(&iterator, bytes, sizeof(bytes), &count, &eof,
+                            &error) == KM_ERR_CONFLICT);
+    CHECK(iterator.position.v == 0 && count == 0 && !eof);
+
+    CHECK(km_document_iter_init(document, (KmBytePos){0}, &iterator,
+                                &error) == KM_OK);
+    CHECK(km_document_undo(document, km_document_revision(document), &error) ==
+          KM_OK);
+    CHECK(km_text_iter_read(&iterator, bytes, sizeof(bytes), &count, &eof,
+                            &error) == KM_ERR_CONFLICT);
+    CHECK(iterator.position.v == 0);
+
+    CHECK(km_document_iter_init(document, (KmBytePos){0}, &iterator,
+                                &error) == KM_OK);
+    CHECK(km_document_redo(document, km_document_revision(document), &error) ==
+          KM_OK);
+    CHECK(km_text_iter_read(&iterator, bytes, sizeof(bytes), &count, &eof,
+                            &error) == KM_ERR_CONFLICT);
+    CHECK(iterator.position.v == 0);
+    check_text(document, expected, sizeof(expected) - 1);
+    km_document_destroy(document);
+
+    {
+        static const uint8_t utf8[] = {'a', 0xe4, 0xb8, 0xad};
+        static const uint8_t cjk[] = {0xe4, 0xb8, 0xad};
+        KmSplice prepend = {{0}, {0}, cjk, sizeof(cjk), 0};
+        document = make_document(utf8, sizeof(utf8));
+        CHECK(km_document_iter_init(document, (KmBytePos){2}, &iterator,
+                                    &error) == KM_ERR_INVALID);
+        CHECK(km_document_iter_init(document, (KmBytePos){1}, &iterator,
+                                    &error) == KM_OK);
+        CHECK(km_text_iter_read(&iterator, bytes, sizeof(bytes), &count, &eof,
+                                &error) == KM_OK);
+        CHECK(count == 2 && !eof && memcmp(bytes, "\xe4\xb8", 2) == 0);
+        CHECK(km_text_iter_read(&iterator, bytes, sizeof(bytes), &count, &eof,
+                                &error) == KM_OK);
+        CHECK(count == 1 && eof && bytes[0] == 0xad);
+        CHECK(km_document_iter_init(document, (KmBytePos){1}, &iterator,
+                                    &error) == KM_OK);
+        CHECK(apply(document, &prepend, 1) == KM_OK);
+        CHECK(km_text_iter_read(&iterator, bytes, sizeof(bytes), &count, &eof,
+                                &error) == KM_ERR_CONFLICT);
+        CHECK(iterator.position.v == 1);
+        km_document_destroy(document);
+    }
+}
+
+static size_t model_boundaries(const uint8_t *text, size_t len,
+                               size_t *positions) {
+    size_t count = 1;
+    size_t i;
+
+    positions[0] = 0;
+    for (i = 1; i < len; ++i) {
+        if ((text[i] & 0xc0u) != 0x80u) positions[count++] = i;
+    }
+    positions[count++] = len;
+    return count;
+}
+
+static size_t random_utf8_payload(uint32_t *state, uint8_t *payload) {
+    static const uint8_t pieces[][4] = {
+        {0}, {'e'}, {0xcc, 0x81}, {0xe4, 0xb8, 0xad},
+        {0xf0, 0x9f, 0x98, 0x80},
+    };
+    static const size_t lengths[] = {1, 1, 2, 3, 4};
+    size_t piece_count = 1 + random_u32(state) % 3u;
+    size_t len = 0;
+    size_t i;
+
+    for (i = 0; i < piece_count; ++i) {
+        size_t index = random_u32(state) % (sizeof(lengths) / sizeof(lengths[0]));
+        memcpy(payload + len, pieces[index], lengths[index]);
+        len += lengths[index];
+    }
+    return len;
+}
+
+static void test_random_utf8_reference_model(void) {
+    static const uint8_t initial[] = {
+        'A', 0, 'e', 0xcc, 0x81, 0xe4, 0xb8, 0xad,
+        0xf0, 0x9f, 0x98, 0x80, 'B',
+    };
+    uint8_t model[8192];
+    ModelAnchor model_anchors[6];
+    KmAnchor *anchors[6];
+    KmDocument *document = make_document(initial, sizeof(initial));
+    KmError error;
+    uint32_t random_state = 0x7554u;
+    size_t model_len = sizeof(initial);
+    size_t step;
+    size_t i;
+
+    memcpy(model, initial, model_len);
+    for (i = 0; i < 6; ++i) {
+        static const size_t initial_positions[] = {0, 2, 3, 5, 8, 13};
+        model_anchors[i].position = initial_positions[i];
+        model_anchors[i].affinity = (i & 1u) != 0
+                                        ? KM_ANCHOR_AFTER
+                                        : KM_ANCHOR_BEFORE;
+        CHECK(km_anchor_create(document,
+                               (KmBytePos){model_anchors[i].position},
+                               model_anchors[i].affinity, &anchors[i],
+                               &error) == KM_OK);
+    }
+    for (step = 0; step < 200; ++step) {
+        uint8_t before[8192];
+        uint8_t payload[12];
+        size_t boundaries[8193];
+        ModelAnchor anchors_before[6];
+        size_t boundary_count = model_boundaries(model, model_len, boundaries);
+        size_t start_index = random_u32(&random_state) % boundary_count;
+        size_t end_index = start_index +
+                           random_u32(&random_state) %
+                               (boundary_count - start_index);
+        size_t payload_len = random_utf8_payload(&random_state, payload);
+        size_t before_len = model_len;
+        KmSplice splice = {{boundaries[start_index]}, {boundaries[end_index]},
+                            payload, payload_len, 0};
+
+        CHECK(model_len - (splice.end.v - splice.start.v) + payload_len <=
+              sizeof(model));
+        memcpy(before, model, model_len);
+        memcpy(anchors_before, model_anchors, sizeof(model_anchors));
+        CHECK(apply(document, &splice, 1) == KM_OK);
+        model_apply_batch(model, &model_len, &splice, 1, model_anchors, 6,
+                          sizeof(model));
+        check_text(document, model, model_len);
+        for (i = 0; i <= model_len; ++i) {
+            bool boundary = i == 0 || i == model_len ||
+                            (model[i] & 0xc0u) != 0x80u;
+            CHECK(km_document_is_boundary(document, (KmBytePos){i}) ==
+                  boundary);
+        }
+        for (i = 0; i < 6; ++i) {
+            CHECK(km_anchor_get(anchors[i]).v == model_anchors[i].position);
+        }
+        CHECK(km_document_undo(document, km_document_revision(document),
+                               &error) == KM_OK);
+        check_text(document, before, before_len);
+        for (i = 0; i < 6; ++i) {
+            CHECK(km_anchor_get(anchors[i]).v == anchors_before[i].position);
+        }
+        CHECK(km_document_redo(document, km_document_revision(document),
+                               &error) == KM_OK);
+        check_text(document, model, model_len);
+        for (i = 0; i < 6; ++i) {
+            CHECK(km_anchor_get(anchors[i]).v == model_anchors[i].position);
+        }
+    }
+    km_document_destroy(document);
+}
+
 static void test_random_batch_reference_model(void) {
     uint8_t initial[256];
     uint8_t model[4096];
@@ -580,8 +766,10 @@ int main(void) {
     test_batch_sort_same_point_and_relations();
     test_failure_atomicity_and_revision();
     test_undo_redo_and_branch_truncation();
+    test_logical_iterator();
     test_random_reference_model();
     test_random_batch_reference_model();
+    test_random_utf8_reference_model();
     test_large_batch_growth();
     puts("document tests passed");
     return 0;

@@ -69,11 +69,7 @@ static const char *toolchain_id(void)
 static const char *const km_sources[] = {
     "src/base.c",
     "src/document.c",
-    "src/unicode.c",
-    "src/editor.c",
-    "src/layout.c",
     "src/render.c",
-    "src/input_vt.c",
 };
 
 static char *join_path(const char *parent, const char *name)
@@ -311,26 +307,24 @@ static bool build_utf8proc(void)
     return nob_cmd_run(&cmd, .dont_reset = false);
 }
 
-static void append_existing(Nob_Cmd *cmd,
-                            const char *const *paths, size_t path_count)
+static bool require_file(const char *path)
 {
-    for (size_t i = 0; i < path_count; ++i) {
-        if (nob_file_exists(paths[i])) nob_cmd_append(cmd, paths[i]);
+    if (!nob_file_exists(path)) {
+        nob_log(NOB_ERROR, "required source is missing: %s", path);
+        return false;
     }
+    return true;
 }
 
 static bool build_executable(const char *name, const char *entry,
                              const char *const *sources, size_t source_count,
                              bool with_platform)
 {
-    if (!nob_file_exists(entry)) {
-        nob_log(NOB_INFO, "skipping %s: %s does not exist", name, entry);
-        return true;
+    if (!require_file(entry)) return false;
+    for (size_t i = 0; i < source_count; ++i) {
+        if (!require_file(sources[i])) return false;
     }
-    if (with_platform && !nob_file_exists(KM_PLATFORM_SOURCE)) {
-        nob_log(NOB_INFO, "skipping %s: %s does not exist", name, KM_PLATFORM_SOURCE);
-        return true;
-    }
+    if (with_platform && !require_file(KM_PLATFORM_SOURCE)) return false;
 
     const char *output = nob_temp_sprintf("build/%s%s", name, KM_EXE_SUFFIX);
     const char *inputs[32];
@@ -345,6 +339,7 @@ static bool build_executable(const char *name, const char *entry,
     inputs[input_count++] = "src/base.h";
     inputs[input_count++] = "src/document.h";
     inputs[input_count++] = "src/platform.h";
+    inputs[input_count++] = "src/render.h";
     inputs[input_count++] = "third_party/utf8proc/utf8proc.h";
     inputs[input_count++] = KM_UTF8PROC_OBJECT;
     inputs[input_count++] = KM_TOOLCHAIN_MARKER;
@@ -359,7 +354,7 @@ static bool build_executable(const char *name, const char *entry,
     append_compiler(&cmd);
     append_common_flags(&cmd, true);
     nob_cmd_append(&cmd, entry);
-    append_existing(&cmd, sources, source_count);
+    for (size_t i = 0; i < source_count; ++i) nob_cmd_append(&cmd, sources[i]);
     if (with_platform) nob_cmd_append(&cmd, KM_PLATFORM_SOURCE);
     nob_cmd_append(&cmd, KM_UTF8PROC_OBJECT);
 #if defined(_MSC_VER)
@@ -383,17 +378,18 @@ static bool build_test_document(void)
                             sources, NOB_ARRAY_LEN(sources), false);
 }
 
-static bool build_test_unicode(void)
-{
-    const char *sources[] = {"src/base.c", "src/document.c", "src/unicode.c"};
-    return build_executable("test_unicode", "tests/test_unicode.c",
-                            sources, NOB_ARRAY_LEN(sources), false);
-}
-
 static bool build_test_platform(void)
 {
+    const char *sources[] = {"src/base.c", "src/render.c"};
     return build_executable("test_platform", "tests/test_platform.c",
-                            NULL, 0, true);
+                            sources, NOB_ARRAY_LEN(sources), true);
+}
+
+static bool build_test_render(void)
+{
+    const char *sources[] = {"src/base.c", "src/render.c"};
+    return build_executable("test_render", "tests/test_render.c",
+                            sources, NOB_ARRAY_LEN(sources), false);
 }
 
 #ifndef _WIN32
@@ -404,9 +400,8 @@ static bool build_test_platform_pty(void)
 }
 #endif
 
-static bool run_test(const char *name, const char *entry)
+static bool run_test(const char *name)
 {
-    if (!nob_file_exists(entry)) return true;
     Nob_Cmd cmd = {0};
     nob_cmd_append(&cmd, nob_temp_sprintf("./build/%s%s", name, KM_EXE_SUFFIX));
     return nob_cmd_run(&cmd, .dont_reset = false);
@@ -414,7 +409,7 @@ static bool run_test(const char *name, const char *entry)
 
 static bool test(void)
 {
-    if (!build_km() || !build_test_document() || !build_test_unicode() ||
+    if (!build_km() || !build_test_document() || !build_test_render() ||
         !build_test_platform()
 #ifndef _WIN32
         || !build_test_platform_pty()
@@ -422,11 +417,10 @@ static bool test(void)
     ) {
         return false;
     }
-    if (!run_test("test_document", "tests/test_document.c") ||
-        !run_test("test_unicode", "tests/test_unicode.c") ||
-        !run_test("test_platform", "tests/test_platform.c")) return false;
+    if (!run_test("test_document") || !run_test("test_render") ||
+        !run_test("test_platform")) return false;
 #ifndef _WIN32
-    if (!run_test("test_platform_pty", "tests/test_platform_pty.c")) return false;
+    if (!run_test("test_platform_pty")) return false;
 #endif
     return true;
 }

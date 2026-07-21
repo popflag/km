@@ -1,4 +1,5 @@
 #include "platform.h"
+#include "render.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -276,36 +277,32 @@ int km_platform_is_interactive(const KmPlatform *platform)
 
 int km_platform_draw_probe(KmPlatform *platform, char *error, size_t error_cap)
 {
-    static const char plain_probe[] =
-        "km terminal probe\n"
-        "ASCII: abc XYZ 123\n"
-        "Combining: e\xCC\x81\n"
-        "CJK: \xE6\x96\x87\xE6\x9C\xAC\n";
-    char screen[512];
-    int length;
+    KmCellGrid *grid = NULL;
+    KmError render_error;
+    char *bytes = NULL;
+    size_t length = 0;
+    int result;
 
     if (platform == NULL) {
         set_error(error, error_cap, "draw probe: platform is null");
         return -1;
     }
-    if (!platform->interactive) {
-        return write_all(plain_probe, sizeof(plain_probe) - 1, error, error_cap);
-    }
-    update_size(platform);
-    length = snprintf(screen, sizeof(screen),
-                      "\x1b[2J\x1b[H"
-                      "km terminal probe\r\n"
-                      "size: %ux%u\r\n"
-                      "ASCII: abc XYZ 123\r\n"
-                      "Combining: e\xCC\x81\r\n"
-                      "CJK: \xE6\x96\x87\xE6\x9C\xAC\r\n"
-                      "Press q or C-g to exit",
-                      platform->columns, platform->rows);
-    if (length < 0 || (size_t)length >= sizeof(screen)) {
-        set_error(error, error_cap, "format probe screen: output is too large");
+    if (platform->interactive) update_size(platform);
+    if (km_render_probe_grid_create(platform->columns, platform->rows,
+                                    platform->interactive, &grid,
+                                    &render_error) != KM_OK ||
+        km_cell_grid_encode_vt(grid, platform->interactive, &bytes, &length,
+                               &render_error) != KM_OK) {
+        set_error(error, error_cap, "%s",
+                  render_error.operation == NULL ? "render terminal probe"
+                                                 : render_error.operation);
+        km_cell_grid_destroy(grid);
         return -1;
     }
-    return write_all(screen, (size_t)length, error, error_cap);
+    result = write_all(bytes, length, error, error_cap);
+    free(bytes);
+    km_cell_grid_destroy(grid);
+    return result;
 }
 
 static int decode_key(KmPlatform *platform, unsigned char byte, KmEvent *event)

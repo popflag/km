@@ -892,7 +892,7 @@ nob.c
 nob.h
 src/
   base.c/.h
-  document.c/.h       gap, anchors, transaction, undo, file metadata
+  document.c/.h       gap, anchors, transaction, undo
   unicode.c/.h        utf8proc adapter, codepoint/EGC/width
   editor.c/.h         Buffer, View, command loop, keymap
   layout.c/.h         visible-line layout, rectangle projection
@@ -1016,7 +1016,7 @@ rectangle-mark-mode and C-x r commands
 - Gap、logical iterator、UTF-8 validation。
 - Anchor 与 atomic splice transaction。
 - Linear undo journal 基础。
-- 文件加载 metadata，但暂不覆盖保存。
+- Phase 1 只完成 Document；文件路径、identity、BOM、EOL metadata 由 Phase 2 base Buffer 的 FileState 拥有。
 
 退出条件：随机参考模型、anchor 和 undo round-trip 全部通过 sanitizer。
 
