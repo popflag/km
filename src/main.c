@@ -520,6 +520,32 @@ int main(int argc, char **argv)
             }
             break;
         }
+        case KM_COMMAND_REQUEST_SCROLL_UP:
+        case KM_COMMAND_REQUEST_SCROLL_DOWN: {
+            KmCommandRequest request = km_command_loop_request(loop);
+            int64_t argument = km_command_loop_request_argument(loop);
+            bool has_argument =
+                km_command_loop_request_has_argument(loop);
+            bool forward = request == KM_COMMAND_REQUEST_SCROLL_UP;
+            size_t *scroll_row =
+                &buffers.items[buffers.current].scroll_row;
+            unsigned columns;
+            unsigned rows;
+            if (km_command_loop_request_page_opposite(loop)) {
+                forward = !forward;
+                has_argument = false;
+            }
+            km_command_loop_clear_request(loop);
+            km_platform_size(platform, &columns, &rows);
+            status = km_layout_scroll_view(
+                buffers.items[buffers.current].buffer, view, rows, columns,
+                *scroll_row, forward, has_argument, argument, scroll_row,
+                &core_error);
+            if (status != KM_OK) {
+                set_core_error(message, sizeof(message), &core_error);
+            }
+            break;
+        }
         case KM_COMMAND_REQUEST_EXIT:
             km_command_loop_clear_request(loop);
             if (!any_modified_buffer(&buffers)) {

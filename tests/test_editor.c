@@ -594,6 +594,26 @@ static void test_command_loop_prefix_arguments(void)
     CHECK(km_view_create(buffer, &view, &error) == KM_OK);
     CHECK(km_command_loop_create(&loop, &error) == KM_OK);
 
+    CHECK(dispatch_key(loop, view, 'v', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_SCROLL_UP);
+    CHECK(!km_command_loop_request_has_argument(loop));
+    CHECK(km_command_loop_request_argument(loop) == 1);
+    CHECK(km_command_loop_last_command(loop) == KM_COMMAND_SCROLL_UP);
+    km_command_loop_clear_request(loop);
+    CHECK(dispatch_key(loop, view, '3', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'v', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_SCROLL_DOWN);
+    CHECK(km_command_loop_request_has_argument(loop));
+    CHECK(km_command_loop_request_argument(loop) == 3);
+    CHECK(km_command_loop_last_command(loop) == KM_COMMAND_SCROLL_DOWN);
+    km_command_loop_clear_request(loop);
+    CHECK(dispatch_key(loop, view, 'u', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '-', 0, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'v', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_SCROLL_UP);
+    CHECK(km_command_loop_request_page_opposite(loop));
+    km_command_loop_clear_request(loop);
+
     CHECK(dispatch_key(loop, view, 'u', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_key(loop, view, 'u', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_key(loop, view, 'f', KM_MOD_CTRL, &error) == KM_OK);
@@ -920,6 +940,25 @@ static void test_minibuffer_requests(void)
                               &error) == KM_OK);
     CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
     CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_SAVE);
+    km_command_loop_clear_request(loop);
+    CHECK(dispatch_key(loop, view, '3', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_text_block(loop, view,
+                              (const uint8_t *)"scroll-up-command", 17,
+                              &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_SCROLL_UP);
+    CHECK(km_command_loop_request_has_argument(loop));
+    CHECK(km_command_loop_request_argument(loop) == 3);
+    km_command_loop_clear_request(loop);
+    CHECK(dispatch_key(loop, view, '-', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_text_block(loop, view,
+                              (const uint8_t *)"scroll-down-command", 19,
+                              &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_SCROLL_DOWN);
+    CHECK(km_command_loop_request_page_opposite(loop));
     km_command_loop_clear_request(loop);
 
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);

@@ -117,7 +117,7 @@ static int run_probe(int terminate_with_signal, const char *path,
         goto kill_child;
     if (ioctl(master, TIOCSWINSZ, &size) != 0) goto kill_child;
     if (wait_for_text(master, output, sizeof(output), &output_len,
-                      "\x1b[37;1H", 1000) != 0) {
+                      "\x1b[36;1H", 1000) != 0) {
         goto kill_child;
     }
     if (terminate_with_signal) {
@@ -137,12 +137,16 @@ static int run_probe(int terminate_with_signal, const char *path,
             goto kill_child;
         }
     } else if (second_path == NULL) {
+        static const unsigned char scroll[] = {0x16};
         static const unsigned char edit[] = {
             0x1b, '[', 'B', 0x1b, '[', 'C', 0x00, 0x1b, '[', 'C',
             0x17, 0x19, 0xe4, 0xb8, 0xad, 0x18, 0x13,
         };
         static const unsigned char exit_keys[] = {0x18, 'k', 0x18, 0x03};
-        if (write(master, edit, sizeof(edit)) != (ssize_t)sizeof(edit)) {
+        if (write(master, scroll, sizeof(scroll)) != (ssize_t)sizeof(scroll) ||
+            wait_for_text(master, output, sizeof(output), &output_len,
+                          "end of buffer", 2000) != 0 ||
+            write(master, edit, sizeof(edit)) != (ssize_t)sizeof(edit)) {
             goto kill_child;
         }
         if (wait_for_text(master, output, sizeof(output), &output_len,

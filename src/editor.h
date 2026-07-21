@@ -21,7 +21,9 @@ typedef enum {
     KM_COMMAND_REQUEST_SWITCH_BUFFER,
     KM_COMMAND_REQUEST_KILL_BUFFER,
     KM_COMMAND_REQUEST_COMPLETE_FILE,
-    KM_COMMAND_REQUEST_COMPLETE_BUFFER
+    KM_COMMAND_REQUEST_COMPLETE_BUFFER,
+    KM_COMMAND_REQUEST_SCROLL_UP,
+    KM_COMMAND_REQUEST_SCROLL_DOWN
 } KmCommandRequest;
 
 typedef enum {
@@ -44,7 +46,9 @@ typedef enum {
     KM_COMMAND_YANK,
     KM_COMMAND_SEARCH_FORWARD,
     KM_COMMAND_UNDO,
-    KM_COMMAND_REDO
+    KM_COMMAND_REDO,
+    KM_COMMAND_SCROLL_UP,
+    KM_COMMAND_SCROLL_DOWN
 } KmCommandId;
 
 KmStatus km_buffer_create_base(const uint8_t *text, size_t len,
@@ -103,6 +107,9 @@ bool km_command_loop_quit_requested(const KmCommandLoop *loop);
 void km_command_loop_clear_quit(KmCommandLoop *loop);
 KmCommandRequest km_command_loop_request(const KmCommandLoop *loop);
 const char *km_command_loop_request_text(const KmCommandLoop *loop);
+int64_t km_command_loop_request_argument(const KmCommandLoop *loop);
+bool km_command_loop_request_has_argument(const KmCommandLoop *loop);
+bool km_command_loop_request_page_opposite(const KmCommandLoop *loop);
 void km_command_loop_clear_request(KmCommandLoop *loop);
 KmStatus km_command_loop_set_prompt_text(KmCommandLoop *loop,
                                          const char *text, KmError *error);

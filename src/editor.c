@@ -59,7 +59,15 @@ struct KmCommandLoop {
     KmCommandId last_command;
     bool quit_requested;
     KmCommandRequest request;
+    int64_t request_argument;
+    bool request_has_argument;
+    bool request_page_opposite;
+    bool command_has_argument;
+    bool command_page_opposite;
     KmPromptKind prompt_kind;
+    int64_t prompt_argument;
+    bool prompt_has_argument;
+    bool prompt_page_opposite;
     uint8_t *prompt_text;
     size_t prompt_len;
     size_t prompt_cap;
@@ -141,6 +149,9 @@ static const KmKeyNode key_trie[] = {
     {'b', 0, KM_INTERNAL_SWITCH_BUFFER, KM_NO_KEY_NODE, 32},
     {'k', 0, KM_INTERNAL_KILL_BUFFER, KM_NO_KEY_NODE, KM_NO_KEY_NODE},
     {'x', KM_MOD_ALT, KM_INTERNAL_EXTENDED_COMMAND,
+     KM_NO_KEY_NODE, 34},
+    {'v', KM_MOD_CTRL, KM_COMMAND_SCROLL_UP, KM_NO_KEY_NODE, 35},
+    {'v', KM_MOD_ALT, KM_COMMAND_SCROLL_DOWN,
      KM_NO_KEY_NODE, KM_NO_KEY_NODE},
 };
 
@@ -1383,6 +1394,33 @@ static KmStatus command_redo(KmCommandLoop *loop, KmView *view,
     return km_view_redo(view, error);
 }
 
+static KmStatus request_scroll(KmCommandLoop *loop, KmView *view,
+                               int64_t argument, KmCommandRequest request,
+                               KmError *error)
+{
+    (void)view;
+    (void)error;
+    loop->request = request;
+    loop->request_argument = argument;
+    loop->request_has_argument = loop->command_has_argument;
+    loop->request_page_opposite = loop->command_page_opposite;
+    return KM_OK;
+}
+
+static KmStatus command_scroll_up(KmCommandLoop *loop, KmView *view,
+                                  int64_t argument, KmError *error)
+{
+    return request_scroll(loop, view, argument, KM_COMMAND_REQUEST_SCROLL_UP,
+                          error);
+}
+
+static KmStatus command_scroll_down(KmCommandLoop *loop, KmView *view,
+                                    int64_t argument, KmError *error)
+{
+    return request_scroll(loop, view, argument, KM_COMMAND_REQUEST_SCROLL_DOWN,
+                          error);
+}
+
 static const KmCommandSpec command_registry[] = {
     {KM_COMMAND_FORWARD_CHAR, "forward-char", command_forward},
     {KM_COMMAND_BACKWARD_CHAR, "backward-char", command_backward},
@@ -1403,6 +1441,8 @@ static const KmCommandSpec command_registry[] = {
     {KM_COMMAND_YANK, "yank", command_yank},
     {KM_COMMAND_UNDO, "undo", command_undo},
     {KM_COMMAND_REDO, "undo-redo", command_redo},
+    {KM_COMMAND_SCROLL_UP, "scroll-up-command", command_scroll_up},
+    {KM_COMMAND_SCROLL_DOWN, "scroll-down-command", command_scroll_down},
 };
 
 static void reset_command_input(KmCommandLoop *loop)
@@ -1549,20 +1589,38 @@ static KmStatus universal_argument(KmCommandLoop *loop, KmError *error)
     return KM_OK;
 }
 
-static KmStatus execute_registered_command(KmCommandLoop *loop, KmView *view,
-                                           KmCommandId id, KmError *error)
+static KmStatus execute_registered_with_argument(
+    KmCommandLoop *loop, KmView *view, KmCommandId id, int64_t argument,
+    bool has_argument, bool page_opposite, KmError *error)
 {
     const KmCommandSpec *command = find_command(id);
-    int64_t argument = current_argument(loop);
     KmStatus status;
 
     reset_command_input(loop);
     if (command == NULL) {
         return fail(error, KM_ERR_INVALID, "command registry");
     }
+    loop->command_has_argument = has_argument;
+    loop->command_page_opposite = page_opposite;
     status = command->callback(loop, view, argument, error);
+    loop->command_has_argument = false;
+    loop->command_page_opposite = false;
     if (status == KM_OK) loop->last_command = id;
     return status;
+}
+
+static KmStatus execute_registered_command(KmCommandLoop *loop, KmView *view,
+                                           KmCommandId id, KmError *error)
+{
+    int64_t argument = current_argument(loop);
+    bool has_argument = loop->prefix_kind != KM_PREFIX_NONE;
+    bool page_opposite = loop->prefix_kind == KM_PREFIX_NUMERIC &&
+                         loop->prefix_negative &&
+                         !loop->prefix_has_digits;
+
+    return execute_registered_with_argument(loop, view, id, argument,
+                                            has_argument, page_opposite,
+                                            error);
 }
 
 static size_t encode_scalar(uint32_t codepoint, uint8_t bytes[4])
@@ -1630,6 +1688,9 @@ static KmStatus begin_prompt(KmCommandLoop *loop, KmPromptKind kind,
         return fail(error, KM_ERR_CONFLICT, "minibuffer");
     }
     loop->prompt_kind = kind;
+    loop->prompt_argument = 1;
+    loop->prompt_has_argument = false;
+    loop->prompt_page_opposite = false;
     loop->prompt_len = 0;
     if (loop->prompt_text != NULL) loop->prompt_text[0] = '\0';
     return KM_OK;
@@ -1868,9 +1929,13 @@ static KmStatus execute_named_command(KmCommandLoop *loop, KmView *view,
     }
     for (i = 0; i < sizeof(command_registry) / sizeof(command_registry[0]); ++i) {
         if (prompt_is(loop, command_registry[i].name)) {
+            int64_t argument = loop->prompt_argument;
+            bool has_argument = loop->prompt_has_argument;
+            bool page_opposite = loop->prompt_page_opposite;
             loop->prompt_kind = KM_PROMPT_NONE;
-            return execute_registered_command(loop, view,
-                                              command_registry[i].id, error);
+            return execute_registered_with_argument(
+                loop, view, command_registry[i].id, argument,
+                has_argument, page_opposite, error);
         }
     }
     return fail(error, KM_ERR_INVALID, "unknown command");
@@ -2190,7 +2255,18 @@ static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
         return KM_OK;
     }
     if (key_trie[node].command == KM_INTERNAL_EXTENDED_COMMAND) {
-        return begin_prompt(loop, KM_PROMPT_COMMAND, error);
+        int64_t argument = current_argument(loop);
+        bool has_argument = loop->prefix_kind != KM_PREFIX_NONE;
+        bool page_opposite = loop->prefix_kind == KM_PREFIX_NUMERIC &&
+                             loop->prefix_negative &&
+                             !loop->prefix_has_digits;
+        KmStatus prompt_status = begin_prompt(loop, KM_PROMPT_COMMAND, error);
+        if (prompt_status == KM_OK) {
+            loop->prompt_argument = argument;
+            loop->prompt_has_argument = has_argument;
+            loop->prompt_page_opposite = page_opposite;
+        }
+        return prompt_status;
     }
     return execute_registered_command(
         loop, view, (KmCommandId)key_trie[node].command, error);
@@ -2277,9 +2353,29 @@ const char *km_command_loop_request_text(const KmCommandLoop *loop)
                : (const char *)loop->prompt_text;
 }
 
+int64_t km_command_loop_request_argument(const KmCommandLoop *loop)
+{
+    return loop == NULL ? 1 : loop->request_argument;
+}
+
+bool km_command_loop_request_has_argument(const KmCommandLoop *loop)
+{
+    return loop != NULL && loop->request_has_argument;
+}
+
+bool km_command_loop_request_page_opposite(const KmCommandLoop *loop)
+{
+    return loop != NULL && loop->request_page_opposite;
+}
+
 void km_command_loop_clear_request(KmCommandLoop *loop)
 {
-    if (loop != NULL) loop->request = KM_COMMAND_REQUEST_NONE;
+    if (loop != NULL) {
+        loop->request = KM_COMMAND_REQUEST_NONE;
+        loop->request_argument = 0;
+        loop->request_has_argument = false;
+        loop->request_page_opposite = false;
+    }
 }
 
 KmStatus km_command_loop_set_prompt_text(KmCommandLoop *loop,

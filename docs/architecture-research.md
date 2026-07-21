@@ -57,7 +57,14 @@
 - 正文显示 document-global logical line number gutter；soft-wrap continuation
   gutter 留空。行号宽度参与两次 layout pass 的 wrap/cursor/scroll 计算，终端
   太窄时优先保留一个正文 cell。mode line 使用独立的 bold+reverse style，
-  继续显示 modified、Buffer 名、region 与 line/column。
+  继续显示 modified、Buffer 名、region 与 line/column；echo area/minibuffer
+  在至少 3 行的终端独占最底行，不再覆盖或混入 mode line。物理高度不足 3
+  行时无法同时容纳正文和两条 chrome：保留一行正文，prompt/message 临时优先
+  于 mode line；恢复到 3 行后自动回到完整三层布局。
+- `C-v` / `M-v` 对应 `scroll-up-command` / `scroll-down-command`，按 soft-wrap
+  后的 visual row 滚动。无 prefix 时保留 2 行上下文；数字 prefix 指定行数，
+  负数反向，`C-u -` / `M--` 保留 Emacs 的反向整页语义。point 仅在将离开
+  新 viewport 时移动到可见边界。
 - 当前 kill ring 只有一个 entry；kill coalescing、`yank-pop` 和完整 Emacs
   undo 遍历仍需差分测试后扩展。
 - POSIX 输入识别 ESC Meta、常见 CSI/SS3 方向键和 bracketed paste；Win32
@@ -251,7 +258,9 @@ Buffer 不被显示时使用 `saved_point`。View 第一次显示 Buffer 时从 
 当前单 View 应用层 registry 为每个 Buffer 保存一个 visual `scroll_row`，切换
 时同时恢复该 Buffer 的 point 和 scroll。它是现有 layout 显式接收 scroll
 参数下的最小实现；增加多 Window 时 scroll/start anchor 必须迁回各 View，
-不能继续挂在 Buffer registry 上。
+不能继续挂在 Buffer registry 上。当前 `C-v` / `M-v` 通过 command request
+把 prefix 语义交给应用层，再由 layout 按正文高度和 EGC/cell wrap 计算新
+`scroll_row` 与必要的 point 夹取；command loop 不持有终端尺寸。
 
 ### 5.4 最小 C 结构草图
 
