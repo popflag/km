@@ -90,16 +90,28 @@ static int run_probe(int terminate_with_signal)
     }
 
     if (wait_for_text(master, output, sizeof(output), &output_len,
-                      "km terminal probe", 2000) != 0)
+                      "*scratch*", 2000) != 0)
         goto kill_child;
     if (ioctl(master, TIOCSWINSZ, &size) != 0) goto kill_child;
     if (wait_for_text(master, output, sizeof(output), &output_len,
-                      "size: 91x37", 1000) != 0)
+                      "\x1b[37;1H", 1000) != 0) {
         goto kill_child;
+    }
     if (terminate_with_signal) {
         if (kill(child, SIGTERM) != 0) goto kill_child;
-    } else if (write(master, "q", 1) != 1) {
-        goto kill_child;
+    } else {
+        static const unsigned char edit[] = {
+            'a', 'b', 'c', 0x02, 0x04, 0x7f,
+            0x18, 'u', 0x18, 'r',
+            '\r', 0xe4, 0xb8, 0xad, 0x07, 'q', 0x18, 0x03,
+        };
+        if (write(master, edit, sizeof(edit)) != (ssize_t)sizeof(edit)) {
+            goto kill_child;
+        }
+        if (wait_for_text(master, output, sizeof(output), &output_len,
+                          "\x1b[1;1Ha\x1b[2;1H\xe4\xb8\xadq", 2000) != 0) {
+            goto kill_child;
+        }
     }
 
     for (iteration = 0; iteration < 30; ++iteration) {
@@ -115,10 +127,12 @@ static int run_probe(int terminate_with_signal)
     if (tcgetattr(slave, &after) != 0 || !same_termios(&before, &after)) goto done;
     if (strstr(output, "\x1b[?1049h") == NULL ||
         strstr(output, "\x1b[?1049l") == NULL ||
-        strstr(output, "size: 91x37") == NULL) goto done;
+        strstr(output, "\x1b[1;1H") == NULL ||
+        strstr(output, "*scratch*") == NULL) goto done;
     if (terminate_with_signal) {
         if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGTERM) goto done;
-    } else if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    } else if (strstr(output, "abc") == NULL || !WIFEXITED(status) ||
+               WEXITSTATUS(status) != 0) {
         goto done;
     }
     result = 0;

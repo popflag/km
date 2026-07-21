@@ -124,7 +124,7 @@ static int fail(const char *message)
 int main(void)
 {
     static const unsigned char input[] = {
-        0x07, 0xC2, 'A', 0xE2, 0x82
+        0x07, 0xC2, 'A', '\r', 0x7f, 0xE2, 0x82
     };
     Capture capture;
     KmPlatform *platform = NULL;
@@ -157,17 +157,27 @@ int main(void)
         return fail("C-g was not normalized as a control key event");
     }
     if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
-        event.kind != KM_EVENT_KEY || event.codepoint != 0xFFFD) {
+        event.kind != KM_EVENT_TEXT || event.codepoint != 0xFFFD) {
         km_platform_close(platform);
         return fail("invalid UTF-8 did not produce replacement");
     }
     if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
-        event.kind != KM_EVENT_KEY || event.codepoint != 'A') {
+        event.kind != KM_EVENT_TEXT || event.codepoint != 'A') {
         km_platform_close(platform);
         return fail("valid byte after invalid UTF-8 was lost");
     }
     if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
-        event.kind != KM_EVENT_KEY || event.codepoint != 0xFFFD) {
+        event.kind != KM_EVENT_TEXT || event.codepoint != '\n') {
+        km_platform_close(platform);
+        return fail("Return was not normalized as LF text");
+    }
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_KEY || event.codepoint != 0x7f) {
+        km_platform_close(platform);
+        return fail("Backspace was not normalized as a key event");
+    }
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_TEXT || event.codepoint != 0xFFFD) {
         km_platform_close(platform);
         return fail("truncated UTF-8 did not produce replacement");
     }

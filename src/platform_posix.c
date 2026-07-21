@@ -275,6 +275,38 @@ int km_platform_is_interactive(const KmPlatform *platform)
     return platform != NULL && platform->interactive;
 }
 
+void km_platform_size(const KmPlatform *platform, unsigned *columns,
+                      unsigned *rows)
+{
+    if (columns != NULL) *columns = platform == NULL ? 0 : platform->columns;
+    if (rows != NULL) *rows = platform == NULL ? 0 : platform->rows;
+}
+
+int km_platform_draw_grid(KmPlatform *platform, const KmCellGrid *grid,
+                          size_t cursor_row, size_t cursor_column,
+                          char *error, size_t error_cap)
+{
+    KmError render_error;
+    char *bytes = NULL;
+    size_t length = 0;
+    int result;
+
+    if (platform == NULL || !platform->interactive) {
+        set_error(error, error_cap, "draw grid: interactive terminal required");
+        return -1;
+    }
+    if (km_cell_grid_encode_frame_vt(grid, cursor_row, cursor_column,
+                                     &bytes, &length, &render_error) != KM_OK) {
+        set_error(error, error_cap, "%s",
+                  render_error.operation == NULL ? "encode terminal frame"
+                                                 : render_error.operation);
+        return -1;
+    }
+    result = write_all(bytes, length, error, error_cap);
+    free(bytes);
+    return result;
+}
+
 int km_platform_draw_probe(KmPlatform *platform, char *error, size_t error_cap)
 {
     KmCellGrid *grid = NULL;
@@ -303,6 +335,26 @@ int km_platform_draw_probe(KmPlatform *platform, char *error, size_t error_cap)
     free(bytes);
     km_cell_grid_destroy(grid);
     return result;
+}
+
+static void finish_key(KmEvent *event, uint32_t codepoint)
+{
+    memset(event, 0, sizeof(*event));
+    event->repeat = 1;
+    if (codepoint == 8 || codepoint == 0x7f) {
+        event->kind = KM_EVENT_KEY;
+        event->codepoint = 0x7f;
+    } else if (codepoint == '\r' || codepoint == '\n') {
+        event->kind = KM_EVENT_TEXT;
+        event->codepoint = '\n';
+    } else if (codepoint >= 1 && codepoint <= 26) {
+        event->kind = KM_EVENT_KEY;
+        event->codepoint = (uint32_t)('a' + codepoint - 1);
+        event->modifiers = KM_MOD_CTRL;
+    } else {
+        event->kind = codepoint >= 0x20 ? KM_EVENT_TEXT : KM_EVENT_KEY;
+        event->codepoint = codepoint;
+    }
 }
 
 static int decode_key(KmPlatform *platform, unsigned char byte, KmEvent *event)
@@ -347,15 +399,7 @@ static int decode_key(KmPlatform *platform, unsigned char byte, KmEvent *event)
         codepoint = 0xFFFD;
     }
 
-    memset(event, 0, sizeof(*event));
-    event->kind = KM_EVENT_KEY;
-    event->repeat = 1;
-    if (codepoint >= 1 && codepoint <= 26) {
-        event->codepoint = (uint32_t)('a' + codepoint - 1);
-        event->modifiers = KM_MOD_CTRL;
-    } else {
-        event->codepoint = codepoint;
-    }
+    finish_key(event, codepoint);
     return 1;
 }
 
@@ -433,10 +477,7 @@ int km_platform_read_event(KmPlatform *platform, KmEvent *event,
             if (platform->utf8_needed != 0) {
                 platform->utf8_needed = 0;
                 platform->eof_pending = 1;
-                memset(event, 0, sizeof(*event));
-                event->kind = KM_EVENT_KEY;
-                event->codepoint = 0xFFFD;
-                event->repeat = 1;
+                finish_key(event, 0xFFFD);
                 return 0;
             }
             memset(event, 0, sizeof(*event));

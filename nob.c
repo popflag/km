@@ -70,6 +70,7 @@ static const char *const km_sources[] = {
     "src/base.c",
     "src/document.c",
     "src/editor.c",
+    "src/layout.c",
     "src/render.c",
 };
 
@@ -340,6 +341,8 @@ static bool build_executable(const char *name, const char *entry,
     inputs[input_count++] = "src/base.h";
     inputs[input_count++] = "src/document.h";
     inputs[input_count++] = "src/editor.h";
+    inputs[input_count++] = "src/event.h";
+    inputs[input_count++] = "src/layout.h";
     inputs[input_count++] = "src/platform.h";
     inputs[input_count++] = "src/render.h";
     inputs[input_count++] = "third_party/utf8proc/utf8proc.h";
@@ -387,6 +390,16 @@ static bool build_test_editor(void)
                             sources, NOB_ARRAY_LEN(sources), false);
 }
 
+static bool build_test_layout(void)
+{
+    const char *sources[] = {
+        "src/base.c", "src/document.c", "src/editor.c",
+        "src/layout.c", "src/render.c",
+    };
+    return build_executable("test_layout", "tests/test_layout.c",
+                            sources, NOB_ARRAY_LEN(sources), false);
+}
+
 static bool build_test_platform(void)
 {
     const char *sources[] = {"src/base.c", "src/render.c"};
@@ -419,6 +432,7 @@ static bool run_test(const char *name)
 static bool test(void)
 {
     if (!build_km() || !build_test_document() || !build_test_editor() ||
+        !build_test_layout() ||
         !build_test_render() ||
         !build_test_platform()
 #ifndef _WIN32
@@ -428,6 +442,7 @@ static bool test(void)
         return false;
     }
     if (!run_test("test_document") || !run_test("test_editor") ||
+        !run_test("test_layout") ||
         !run_test("test_render") ||
         !run_test("test_platform")) return false;
 #ifndef _WIN32

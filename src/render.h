@@ -38,5 +38,9 @@ KmStatus km_render_probe_grid_create(unsigned columns, unsigned rows,
 KmStatus km_cell_grid_encode_vt(const KmCellGrid *grid, bool clear_screen,
                                 char **out_bytes, size_t *out_len,
                                 KmError *error);
+KmStatus km_cell_grid_encode_frame_vt(const KmCellGrid *grid,
+                                      size_t cursor_row, size_t cursor_column,
+                                      char **out_bytes, size_t *out_len,
+                                      KmError *error);
 
 #endif

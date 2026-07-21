@@ -317,6 +317,38 @@ int km_platform_is_interactive(const KmPlatform *platform)
     return platform != NULL && platform->interactive;
 }
 
+void km_platform_size(const KmPlatform *platform, unsigned *columns,
+                      unsigned *rows)
+{
+    if (columns != NULL) *columns = platform == NULL ? 0 : platform->columns;
+    if (rows != NULL) *rows = platform == NULL ? 0 : platform->rows;
+}
+
+int km_platform_draw_grid(KmPlatform *platform, const KmCellGrid *grid,
+                          size_t cursor_row, size_t cursor_column,
+                          char *error, size_t error_cap)
+{
+    KmError render_error;
+    char *bytes = NULL;
+    size_t length = 0;
+    int result;
+
+    if (platform == NULL || !platform->interactive) {
+        set_error(error, error_cap, "draw grid: interactive terminal required");
+        return -1;
+    }
+    if (km_cell_grid_encode_frame_vt(grid, cursor_row, cursor_column,
+                                     &bytes, &length, &render_error) != KM_OK) {
+        set_error(error, error_cap, "%s",
+                  render_error.operation == NULL ? "encode terminal frame"
+                                                 : render_error.operation);
+        return -1;
+    }
+    result = write_utf8(platform, bytes, length, error, error_cap);
+    free(bytes);
+    return result;
+}
+
 int km_platform_draw_probe(KmPlatform *platform, char *error, size_t error_cap)
 {
     KmCellGrid *grid = NULL;
@@ -351,14 +383,25 @@ static void finish_key(KmEvent *event, uint32_t codepoint,
                        uint32_t modifiers, uint32_t repeat)
 {
     memset(event, 0, sizeof(*event));
-    event->kind = KM_EVENT_KEY;
     event->repeat = repeat;
-    if (codepoint >= 1 && codepoint <= 26) {
+    if (codepoint == 8 || codepoint == 0x7f) {
+        event->kind = KM_EVENT_KEY;
+        event->codepoint = 0x7f;
+        event->modifiers = modifiers & (KM_MOD_CTRL | KM_MOD_ALT);
+    } else if (codepoint == '\r' || codepoint == '\n') {
+        event->kind = KM_EVENT_TEXT;
+        event->codepoint = '\n';
+    } else if (codepoint >= 1 && codepoint <= 26) {
+        event->kind = KM_EVENT_KEY;
         event->codepoint = (uint32_t)('a' + codepoint - 1);
         event->modifiers = modifiers | KM_MOD_CTRL;
     } else {
+        event->kind = codepoint >= 0x20 &&
+                              (modifiers & (KM_MOD_CTRL | KM_MOD_ALT)) == 0
+                          ? KM_EVENT_TEXT
+                          : KM_EVENT_KEY;
         event->codepoint = codepoint;
-        event->modifiers = modifiers;
+        event->modifiers = event->kind == KM_EVENT_TEXT ? 0 : modifiers;
     }
 }
 

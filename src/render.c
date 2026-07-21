@@ -350,3 +350,78 @@ fail:
     free(bytes);
     return status;
 }
+
+KmStatus km_cell_grid_encode_frame_vt(const KmCellGrid *grid,
+                                      size_t cursor_row, size_t cursor_column,
+                                      char **out_bytes, size_t *out_len,
+                                      KmError *error)
+{
+    char *bytes = NULL;
+    size_t length = 0;
+    size_t capacity = 0;
+    char position[64];
+    int position_len;
+    KmStatus status;
+    size_t row;
+
+    if (grid == NULL || out_bytes == NULL || out_len == NULL ||
+        cursor_row >= grid->rows || cursor_column >= grid->columns) {
+        return fail(error, KM_ERR_INVALID, "encode CellGrid frame");
+    }
+    *out_bytes = NULL;
+    *out_len = 0;
+    status = append_bytes(&bytes, &length, &capacity,
+                          "\x1b[?25l\x1b[2J", 10, error);
+    if (status != KM_OK) goto fail;
+    for (row = 0; row < grid->rows; ++row) {
+        size_t column;
+        size_t last_column = 0;
+        bool populated = false;
+
+        for (column = 0; column < grid->columns; ++column) {
+            if (grid->cells[row * grid->columns + column].glyph_len != 0) {
+                last_column = column;
+                populated = true;
+            }
+        }
+        if (!populated) continue;
+        position_len = snprintf(position, sizeof(position), "\x1b[%llu;1H",
+                                (unsigned long long)row + 1u);
+        if (position_len < 0 || (size_t)position_len >= sizeof(position)) {
+            status = fail(error, KM_ERR_INVALID, "format CellGrid row");
+            goto fail;
+        }
+        status = append_bytes(&bytes, &length, &capacity, position,
+                              (size_t)position_len, error);
+        if (status != KM_OK) goto fail;
+        for (column = 0; column <= last_column; ++column) {
+            const KmCell *cell = &grid->cells[row * grid->columns + column];
+            if ((cell->flags & KM_CELL_CONTINUATION) != 0) continue;
+            status = cell->glyph_len == 0
+                         ? append_bytes(&bytes, &length, &capacity, " ", 1, error)
+                         : append_bytes(
+                               &bytes, &length, &capacity,
+                               (const char *)grid->glyphs + cell->glyph_off,
+                               cell->glyph_len, error);
+            if (status != KM_OK) goto fail;
+        }
+    }
+    position_len = snprintf(position, sizeof(position), "\x1b[%llu;%lluH\x1b[?25h",
+                            (unsigned long long)cursor_row + 1u,
+                            (unsigned long long)cursor_column + 1u);
+    if (position_len < 0 || (size_t)position_len >= sizeof(position)) {
+        status = fail(error, KM_ERR_INVALID, "format CellGrid cursor");
+        goto fail;
+    }
+    status = append_bytes(&bytes, &length, &capacity, position,
+                          (size_t)position_len, error);
+    if (status != KM_OK) goto fail;
+    *out_bytes = bytes;
+    *out_len = length;
+    km_error_clear(error);
+    return KM_OK;
+
+fail:
+    free(bytes);
+    return status;
+}

@@ -2,11 +2,25 @@
 #define KM_EDITOR_H
 
 #include "document.h"
+#include "event.h"
 
 #include <stdbool.h>
 
 typedef struct KmBuffer KmBuffer;
 typedef struct KmView KmView;
+typedef struct KmCommandLoop KmCommandLoop;
+
+typedef enum {
+    KM_COMMAND_NONE = 0,
+    KM_COMMAND_INSERT_UTF8_BLOCK,
+    KM_COMMAND_PASTE,
+    KM_COMMAND_FORWARD_CHAR,
+    KM_COMMAND_BACKWARD_CHAR,
+    KM_COMMAND_DELETE_CHAR,
+    KM_COMMAND_DELETE_BACKWARD_CHAR,
+    KM_COMMAND_UNDO,
+    KM_COMMAND_REDO
+} KmCommandId;
 
 KmStatus km_buffer_create_base(const uint8_t *text, size_t len,
                                KmBuffer **out_buffer, KmError *error);
@@ -38,5 +52,14 @@ KmStatus km_view_delete_char(KmView *view, KmError *error);
 KmStatus km_view_delete_backward_char(KmView *view, KmError *error);
 KmStatus km_view_undo(KmView *view, KmError *error);
 KmStatus km_view_redo(KmView *view, KmError *error);
+
+KmStatus km_command_loop_create(KmCommandLoop **out_loop, KmError *error);
+void km_command_loop_destroy(KmCommandLoop *loop);
+KmStatus km_command_loop_dispatch(KmCommandLoop *loop, KmView *view,
+                                  const KmEvent *event, KmError *error);
+KmCommandId km_command_loop_last_command(const KmCommandLoop *loop);
+bool km_command_loop_quit_requested(const KmCommandLoop *loop);
+void km_command_loop_clear_quit(KmCommandLoop *loop);
+bool km_command_loop_exit_requested(const KmCommandLoop *loop);
 
 #endif
