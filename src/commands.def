@@ -1,0 +1,240 @@
+/* X-macro command manifest. Intentionally has no include guard. */
+
+KM_COMMAND_ID(KM_COMMAND_NONE, 0)
+KM_COMMAND_ID(KM_COMMAND_INSERT_UTF8_BLOCK, 1)
+KM_COMMAND_ID(KM_COMMAND_PASTE, 2)
+KM_COMMAND_ID(KM_COMMAND_SEARCH_FORWARD, 44)
+KM_COMMAND_ID(KM_COMMAND_SEARCH_BACKWARD, 45)
+
+KM_PUBLIC_COMMAND(KM_COMMAND_FORWARD_CHAR, 3, "forward-char", command_forward,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_BACKWARD_CHAR, 4, "backward-char", command_backward,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_FORWARD_WORD, 5, "forward-word", command_forward_word,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_BACKWARD_WORD, 6, "backward-word", command_backward_word,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_FORWARD_PARAGRAPH, 14, "forward-paragraph",
+                  command_forward_paragraph, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_BACKWARD_PARAGRAPH, 15, "backward-paragraph",
+                  command_backward_paragraph, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_FORWARD_SENTENCE, 16, "forward-sentence",
+                  command_forward_sentence, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_BACKWARD_SENTENCE, 17, "backward-sentence",
+                  command_backward_sentence, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_DELETE_CHAR, 7, "delete-char", command_delete,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_DELETE_BACKWARD_CHAR, 8, "delete-backward-char",
+                  command_delete_backward, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_KILL_WORD, 27, "kill-word", command_kill_word,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_BACKWARD_KILL_WORD, 28, "backward-kill-word",
+                  command_backward_kill_word, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_OPEN_LINE, 31, "open-line", command_open_line,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_TRANSPOSE_CHARS, 32, "transpose-chars",
+                  command_transpose_chars, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_TRANSPOSE_WORDS, 33, "transpose-words",
+                  command_transpose_words, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_TRANSPOSE_LINES, 34, "transpose-lines",
+                  command_transpose_lines, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_DELETE_HORIZONTAL_SPACE, 35,
+                  "delete-horizontal-space", command_delete_horizontal_space,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_JUST_ONE_SPACE, 36, "just-one-space",
+                  command_just_one_space, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_DELETE_INDENTATION, 37, "delete-indentation",
+                  command_delete_indentation, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_DELETE_BLANK_LINES, 38, "delete-blank-lines",
+                  command_delete_blank_lines, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_UPCASE_WORD, 39, "upcase-word", command_upcase_word,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_DOWNCASE_WORD, 40, "downcase-word",
+                  command_downcase_word, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_CAPITALIZE_WORD, 41, "capitalize-word",
+                  command_capitalize_word, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_QUOTED_INSERT, 42, "quoted-insert",
+                  command_quoted_insert, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_QUERY_REPLACE, 43, "query-replace",
+                  command_query_replace, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_BEGINNING_OF_LINE, 9, "beginning-of-line",
+                  command_beginning_of_line, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_BACK_TO_INDENTATION, 10, "back-to-indentation",
+                  command_back_to_indentation, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_END_OF_LINE, 11, "end-of-line", command_end_of_line,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_BEGINNING_OF_BUFFER, 12, "beginning-of-buffer",
+                  command_beginning_of_buffer, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_END_OF_BUFFER, 13, "end-of-buffer",
+                  command_end_of_buffer, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_NEXT_LINE, 18, "next-line", command_next_line,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_PREVIOUS_LINE, 19, "previous-line",
+                  command_previous_line, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_SET_MARK, 20, "set-mark-command", command_set_mark,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_MARK_WORD, 21, "mark-word", command_mark_word,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_MARK_WHOLE_BUFFER, 22, "mark-whole-buffer",
+                  command_mark_whole_buffer, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_EXCHANGE_POINT_AND_MARK, 23,
+                  "exchange-point-and-mark", command_exchange_mark,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_KILL_REGION, 24, "kill-region", command_kill_region,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_COPY_REGION, 25, "copy-region-as-kill",
+                  command_copy_region, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_KILL_LINE, 26, "kill-line", command_kill_line,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_YANK, 29, "yank", command_yank,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_YANK_POP, 30, "yank-pop", command_yank_pop,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_UNDO, 46, "undo", command_undo,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_REDO, 47, "undo-redo", command_redo,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_SCROLL_UP, 48, "scroll-up-command", command_scroll_up,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_SCROLL_DOWN, 49, "scroll-down-command",
+                  command_scroll_down, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_RECENTER, 50, "recenter-top-bottom", command_recenter,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_GOTO_LINE, 51, "goto-line", command_goto_line,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_GOTO_CHAR, 52, "goto-char", command_goto_char,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_MOVE_TO_WINDOW_LINE, 53, "move-to-window-line",
+                  command_move_to_window_line, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_DISPLAY_LINE_NUMBERS_MODE, 54,
+                  "display-line-numbers-mode", command_display_line_numbers_mode,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+
+KM_INTERNAL_COMMAND(KM_INTERNAL_UNIVERSAL_ARGUMENT, 100, "universal-argument",
+                    command_universal_argument, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                    KM_COMMAND_KEEP_PREFIX)
+KM_INTERNAL_COMMAND(KM_INTERNAL_EXIT, 101, "exit-editor", command_request_exit,
+                    KM_CONTEXT(KM_KEYMAP_GLOBAL), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_SAVE, 102, "save-buffer", command_request_save,
+                    KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX)
+KM_INTERNAL_COMMAND(KM_INTERNAL_SAVE_ALL_EXIT, 103,
+                    "save-buffers-kill-terminal", command_request_save_all_exit,
+                    KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX)
+KM_INTERNAL_COMMAND(KM_INTERNAL_SEARCH_FORWARD, 104, "isearch-forward",
+                    command_start_search_forward, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                    KM_COMMAND_MX)
+KM_INTERNAL_COMMAND(KM_INTERNAL_SEARCH_BACKWARD, 105, "isearch-backward",
+                    command_start_search_backward, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                    KM_COMMAND_MX)
+KM_INTERNAL_COMMAND(KM_INTERNAL_FIND_FILE, 106, "find-file", command_find_file,
+                    KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX)
+KM_INTERNAL_COMMAND(KM_INTERNAL_SWITCH_BUFFER, 107, "switch-to-buffer",
+                    command_switch_buffer, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                    KM_COMMAND_MX)
+KM_INTERNAL_COMMAND(KM_INTERNAL_KILL_BUFFER, 108, "kill-buffer", command_kill_buffer,
+                    KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX)
+KM_INTERNAL_COMMAND(KM_INTERNAL_EXTENDED_COMMAND, 109,
+                    "execute-extended-command", command_extended,
+                    KM_CONTEXT(KM_KEYMAP_GLOBAL), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_KEYBOARD_QUIT, 110, "keyboard-quit",
+                    command_keyboard_quit,
+                    KM_CONTEXT(KM_KEYMAP_GLOBAL) |
+                        KM_CONTEXT(KM_KEYMAP_MINIBUFFER) |
+                        KM_CONTEXT(KM_KEYMAP_ISEARCH) |
+                        KM_CONTEXT(KM_KEYMAP_CONFIRMATION),
+                    0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_MINIBUFFER_BACKSPACE, 111,
+                    "minibuffer-backspace", command_minibuffer_backspace,
+                    KM_CONTEXT(KM_KEYMAP_MINIBUFFER), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_MINIBUFFER_CLEAR, 112, "minibuffer-clear",
+                    command_minibuffer_clear, KM_CONTEXT(KM_KEYMAP_MINIBUFFER), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_MINIBUFFER_NEXT, 113,
+                    "minibuffer-next-completion", command_minibuffer_next,
+                    KM_CONTEXT(KM_KEYMAP_MINIBUFFER), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_MINIBUFFER_PREVIOUS, 114,
+                    "minibuffer-previous-completion", command_minibuffer_previous,
+                    KM_CONTEXT(KM_KEYMAP_MINIBUFFER), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_MINIBUFFER_COMPLETE, 115, "minibuffer-complete",
+                    command_minibuffer_complete, KM_CONTEXT(KM_KEYMAP_MINIBUFFER),
+                    0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_MINIBUFFER_ACCEPT_ORIGINAL, 116,
+                    "minibuffer-accept-original",
+                    command_minibuffer_accept_original,
+                    KM_CONTEXT(KM_KEYMAP_MINIBUFFER), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_MINIBUFFER_ACCEPT, 117, "minibuffer-accept",
+                    command_minibuffer_accept, KM_CONTEXT(KM_KEYMAP_MINIBUFFER),
+                    0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_ISEARCH_REPEAT_FORWARD, 118,
+                    "isearch-repeat-forward", command_isearch_repeat_forward,
+                    KM_CONTEXT(KM_KEYMAP_ISEARCH), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_ISEARCH_REPEAT_BACKWARD, 119,
+                    "isearch-repeat-backward", command_isearch_repeat_backward,
+                    KM_CONTEXT(KM_KEYMAP_ISEARCH), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_ISEARCH_BACKSPACE, 120, "isearch-backspace",
+                    command_isearch_backspace, KM_CONTEXT(KM_KEYMAP_ISEARCH), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_ISEARCH_ACCEPT, 121, "isearch-accept",
+                    command_isearch_accept, KM_CONTEXT(KM_KEYMAP_ISEARCH), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_CONFIRM_YES, 122, "confirmation-yes",
+                    command_confirm_yes, KM_CONTEXT(KM_KEYMAP_CONFIRMATION), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_CONFIRM_NO, 123, "confirmation-no",
+                    command_confirm_no, KM_CONTEXT(KM_KEYMAP_CONFIRMATION), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_CONFIRM_ALL, 124, "confirmation-all",
+                    command_confirm_all, KM_CONTEXT(KM_KEYMAP_CONFIRMATION), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_CONFIRM_QUIT, 125, "confirmation-quit",
+                    command_confirm_quit, KM_CONTEXT(KM_KEYMAP_CONFIRMATION), 0)
+KM_INTERNAL_COMMAND(KM_INTERNAL_UNDEFINED, 126, "undefined", command_undefined,
+                    KM_CONTEXT(KM_KEYMAP_GLOBAL) |
+                        KM_CONTEXT(KM_KEYMAP_MINIBUFFER) |
+                        KM_CONTEXT(KM_KEYMAP_ISEARCH) |
+                        KM_CONTEXT(KM_KEYMAP_CONFIRMATION),
+                    0)

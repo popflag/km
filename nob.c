@@ -383,6 +383,7 @@ static bool build_executable(const char *name, const char *entry,
     }
     if (with_platform) inputs[input_count++] = KM_PLATFORM_SOURCE;
     inputs[input_count++] = "src/base.h";
+    inputs[input_count++] = "src/commands.def";
     inputs[input_count++] = "src/document.h";
     inputs[input_count++] = "src/editor.h";
     inputs[input_count++] = "src/event.h";
