@@ -108,7 +108,8 @@ static void test_chunk_independence(void)
         0x1b, '[', '1', '~', 0x1b, '[', '7', '~',
         0x1b, '[', '4', '~', 0x1b, '[', '8', '~',
         0x1b, '3',
-        0x1b, '[', '2', '0', '0', '~', 'p', 0, 'q',
+        0x1b, '[', '2', '0', '0', '~',
+        'p', 0, 'q', '\r', 'x', '\r', '\n', 'y', '\n', 'z',
         0x1b, '[', '2', '0', '1', '~',
         0x1b, ']', 't', 'i', 't', 'l', 'e', 0x07, 'X',
         0x1b, ']', 't', 'i', 't', 'l', 'e', 0x1b, '\\', 'Y',
@@ -146,8 +147,8 @@ static void test_chunk_independence(void)
     CHECK(whole.events[15].codepoint == '3' &&
           whole.events[15].modifiers == KM_MOD_ALT);
     CHECK(whole.events[16].kind == KM_EVENT_PASTE &&
-          whole.events[16].text_len == 3 &&
-          memcmp(whole.events[16].text, "p\0q", 3) == 0);
+          whole.events[16].text_len == 9 &&
+          memcmp(whole.events[16].text, "p\0q\nx\ny\nz", 9) == 0);
     CHECK(whole.events[17].codepoint == 'X');
     CHECK(whole.events[18].codepoint == 'Y');
     CHECK(whole.events[19].codepoint == KM_KEY_ESCAPE);

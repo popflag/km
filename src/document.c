@@ -184,6 +184,18 @@ static bool update_delta(ptrdiff_t *delta, size_t inserted, size_t deleted) {
     return true;
 }
 
+/* Transactions are fully measured before these helpers run. */
+static size_t validated_add_delta(size_t position, ptrdiff_t delta) {
+    size_t result;
+    if (!add_delta(position, delta, &result)) abort();
+    return result;
+}
+
+static void validated_update_delta(ptrdiff_t *delta, size_t inserted,
+                                   size_t deleted) {
+    if (!update_delta(delta, inserted, deleted)) abort();
+}
+
 static bool choose_capacity(size_t current, size_t required, size_t *out) {
     size_t capacity = current < 4096 ? 4096 : current;
     size_t grown;
@@ -384,14 +396,12 @@ static size_t simulate_position(size_t position, KmAnchorAffinity affinity,
     ptrdiff_t delta = 0;
     size_t i;
     for (i = 0; i < count; ++i) {
-        size_t start;
-        size_t end;
+        size_t start = validated_add_delta(splices[i].start, delta);
+        size_t end = validated_add_delta(splices[i].end, delta);
         size_t deleted = splices[i].end - splices[i].start;
-        (void)add_delta(splices[i].start, delta, &start);
-        (void)add_delta(splices[i].end, delta, &end);
         position = transform_position(position, affinity, start, end,
                                       splices[i].insert_len);
-        (void)update_delta(&delta, splices[i].insert_len, deleted);
+        validated_update_delta(&delta, splices[i].insert_len, deleted);
     }
     return position;
 }
@@ -401,15 +411,13 @@ static void apply_owned_splices(KmDocument *document,
     ptrdiff_t delta = 0;
     size_t i;
     for (i = 0; i < count; ++i) {
-        size_t start;
-        size_t end;
+        size_t start = validated_add_delta(splices[i].start, delta);
+        size_t end = validated_add_delta(splices[i].end, delta);
         size_t deleted = splices[i].end - splices[i].start;
-        (void)add_delta(splices[i].start, delta, &start);
-        (void)add_delta(splices[i].end, delta, &end);
         replace_gap(&document->gap, start, end, splices[i].insert,
                     splices[i].insert_len);
         transform_anchors(document, start, end, splices[i].insert_len);
-        (void)update_delta(&delta, splices[i].insert_len, deleted);
+        validated_update_delta(&delta, splices[i].insert_len, deleted);
     }
 }
 

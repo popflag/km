@@ -1030,6 +1030,8 @@ tests/
 - 构建程序只选择一个 platform `.c`；核心不得散布 `_WIN32`。
 - `utf8proc v2.11.3` 作为 vendored 第三方源码单独编译，项目的 warnings-as-errors 不施加到第三方源码。
 - GCC/Clang 启用严格 warnings；MSVC 使用对应 `/W4`。
+- 常规 `build`、`test` 和 benchmark 使用 GCC/Clang `-O2` 或 MSVC `/O2`；
+  `sanitize` 保持独立的 ASan/UBSan 构建配置。
 - `test` 目标运行 headless tests；Debug sanitizer 由明确的构建选项启用。
 
 当前 bootstrap 与验证入口为：

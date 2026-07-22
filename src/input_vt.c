@@ -244,6 +244,24 @@ static KmStatus process_paste(KmInputVt *input, uint8_t byte, KmEvent *event,
                     "read paste: input exceeds 1 MiB");
     }
     input->paste_len -= sizeof(end_marker);
+    {
+        size_t read = 0;
+        size_t write = 0;
+
+        while (read < input->paste_len) {
+            if (input->paste[read] == '\r') {
+                input->paste[write++] = '\n';
+                if (read + 1 < input->paste_len &&
+                    input->paste[read + 1] == '\n') {
+                    ++read;
+                }
+            } else {
+                input->paste[write++] = input->paste[read];
+            }
+            ++read;
+        }
+        input->paste_len = write;
+    }
     memset(event, 0, sizeof(*event));
     event->kind = KM_EVENT_PASTE;
     event->repeat = 1;

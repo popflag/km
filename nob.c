@@ -286,6 +286,7 @@ static void append_common_flags(Nob_Cmd *cmd, bool project_code)
 #if defined(_MSC_VER)
     nob_cmd_append(cmd, "/nologo", "/std:c17");
     nob_cmd_append(cmd, "/D_CRT_SECURE_NO_WARNINGS");
+    nob_cmd_append(cmd, "/O2");
     if (project_code) {
         nob_cmd_append(cmd, "/W4", "/WX");
     } else {
@@ -306,6 +307,8 @@ static void append_common_flags(Nob_Cmd *cmd, bool project_code)
         nob_cmd_append(cmd, "-fsanitize=address,undefined",
                        "-fno-sanitize-recover=all",
                        "-fno-omit-frame-pointer");
+    } else {
+        nob_cmd_append(cmd, "-O2");
     }
 #ifndef _WIN32
     if (project_code) nob_cmd_append(cmd, "-D_POSIX_C_SOURCE=200809L");
