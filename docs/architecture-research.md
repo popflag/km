@@ -715,7 +715,10 @@ typedef struct {
 
 ### 12.2 Keymap
 
-首版只实现 global keymap 和一个小型 trie。每个节点使用 child/sibling 或小动态数组；没有证据前不引入 hash table、persistent trie 或任意 map stack。
+当前实现四个独立的小型 keymap：global、minibuffer、isearch 和 confirmation。
+默认绑定是声明表，启动时通过与公开 rebind API 相同的路径构建动态
+child/sibling trie；命令实现不再保存键位。没有证据前不引入 hash table、
+persistent trie 或完整 minor/local/transient map stack。
 
 ```text
 resolve_step(state, key):
@@ -724,7 +727,11 @@ resolve_step(state, key):
     child not found -> UNDEFINED
 ```
 
-API 保留未来传入 ordered active maps 的空间，但首版不实现完整 minor/local/transient/remap 优先级。
+Command registry 分别声明允许执行的 context 和是否出现在 `M-x`。正文移动
+命令只能绑定到 global map；minibuffer、isearch 和 confirmation 使用不进入
+`M-x` 的局部命令。`M-x` 接受命令名后先退出 minibuffer，再在 global context
+执行 interactive command。运行时 rebind 仍通过 context 校验，不能把
+`forward-char` 直接绑定到 minibuffer。
 
 ### 12.3 Command loop 状态
 
@@ -1044,6 +1051,7 @@ Harness 外部使用 Emacs 的 1-based character position；适配层通过严�
 ```text
 self-insert-command
 forward-char / backward-char
+forward-word / backward-word
 delete-char / delete-backward-char
 set-mark-command / exchange-point-and-mark
 kill-region / kill-line / yank / yank-pop

@@ -308,6 +308,42 @@ static void test_char_commands_utf8_boundaries(void)
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
 }
 
+static void test_word_commands(void)
+{
+    static const uint8_t text[] = {
+        ' ', ' ', 'f', 'o', 'o', '_', 'b', 'a', 'r', ' ',
+        0xe4, 0xb8, 0xad, 'e', 0xcc, 0x81, '!',
+    };
+    KmBuffer *buffer = make_base(text, sizeof(text));
+    KmView *view = NULL;
+    KmError error;
+
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_view_forward_word(view, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 5);
+    CHECK(km_view_forward_word(view, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 9);
+    CHECK(km_view_forward_word(view, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 16);
+    CHECK(km_view_forward_word(view, &error) == KM_ERR_INVALID);
+    CHECK(km_view_point(view).v == 16);
+    CHECK(km_view_backward_word(view, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 10);
+    CHECK(km_view_backward_word(view, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 6);
+
+    CHECK(km_buffer_narrow(buffer, (KmBytePos){6}, (KmBytePos){16}, &error) ==
+          KM_OK);
+    CHECK(km_view_forward_word(view, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 9);
+    CHECK(km_view_forward_word(view, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 16);
+    CHECK(km_view_forward_word(view, &error) == KM_ERR_INVALID);
+    CHECK(km_view_point(view).v == 16);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+}
+
 static void test_edit_commands_undo_redo_and_view_points(void)
 {
     static const uint8_t initial[] = {'a', 'b'};
@@ -516,6 +552,11 @@ static void test_command_loop_events_and_trie(void)
         'a', 0xf0, 0x9f, 0x98, 0x80, 0, 'e', 0xcc, 0x81, 'b',
     };
     static const uint8_t invalid_utf8[] = {0xc0, 0x80};
+    static const KmKeyStroke alt_h[] = {{'h', KM_MOD_ALT}};
+    static const KmKeyStroke ctrl_c[] = {{'c', KM_MOD_CTRL}};
+    static const KmKeyStroke ctrl_c_f[] = {
+        {'c', KM_MOD_CTRL}, {'f', 0},
+    };
     KmBuffer *buffer = make_base(initial, sizeof(initial));
     KmView *view = NULL;
     KmCommandLoop *loop = NULL;
@@ -525,6 +566,36 @@ static void test_command_loop_events_and_trie(void)
     CHECK(km_view_create(buffer, &view, &error) == KM_OK);
     CHECK(km_command_loop_create(&loop, &error) == KM_OK);
     CHECK(km_command_loop_last_command(loop) == KM_COMMAND_NONE);
+    CHECK(dispatch_key(loop, view, '2', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'f', KM_MOD_ALT, &error) == KM_ERR_INVALID);
+    CHECK(km_view_point(view).v == 0);
+    CHECK(km_command_loop_last_command(loop) == KM_COMMAND_NONE);
+    CHECK(dispatch_key(loop, view, 'f', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 2);
+    CHECK(km_command_loop_last_command(loop) == KM_COMMAND_FORWARD_WORD);
+    CHECK(dispatch_key(loop, view, 'b', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 0);
+    CHECK(km_command_loop_last_command(loop) == KM_COMMAND_BACKWARD_WORD);
+    CHECK(km_command_loop_bind_key(loop, KM_KEYMAP_GLOBAL, alt_h, 1,
+                                   "forward-char", &error) == KM_OK);
+    CHECK(km_command_loop_bind_key(loop, KM_KEYMAP_MINIBUFFER, alt_h, 1,
+                                   "forward-char", &error) == KM_ERR_INVALID);
+    CHECK(dispatch_key(loop, view, 'h', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 1);
+    CHECK(km_command_loop_bind_key(loop, KM_KEYMAP_GLOBAL, alt_h, 1,
+                                   "backward-char", &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'h', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 0);
+    CHECK(km_command_loop_bind_key(loop, KM_KEYMAP_GLOBAL, ctrl_c_f, 2,
+                                   "forward-char", &error) == KM_OK);
+    CHECK(km_command_loop_bind_key(loop, KM_KEYMAP_GLOBAL, ctrl_c, 1,
+                                   "forward-char", &error) ==
+          KM_ERR_CONFLICT);
+    CHECK(dispatch_key(loop, view, 'c', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'f', 0, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 1);
+    CHECK(dispatch_key(loop, view, 'b', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 0);
 
     CHECK(dispatch_key(loop, view, 'f', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(km_view_point(view).v == 1);
@@ -1018,6 +1089,7 @@ static void test_minibuffer_requests(void)
     static const uint8_t invalid[] = {0xc0, 0x80};
     static const char *const buffer_matches[] = {"*scratch*"};
     static const char *const directory_match[] = {"/tmp/sub/"};
+    static const KmKeyStroke alt_h[] = {{'h', KM_MOD_ALT}};
     KmBuffer *buffer = make_base(NULL, 0);
     KmView *view = NULL;
     KmCommandLoop *loop = NULL;
@@ -1026,6 +1098,8 @@ static void test_minibuffer_requests(void)
 
     CHECK(km_view_create(buffer, &view, &error) == KM_OK);
     CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(km_command_loop_bind_key(loop, KM_KEYMAP_MINIBUFFER, alt_h, 1,
+                                   "minibuffer-clear", &error) == KM_OK);
 
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_key_repeat(loop, view, 'f', KM_MOD_CTRL, 2, &error) ==
@@ -1039,7 +1113,7 @@ static void test_minibuffer_requests(void)
     km_command_loop_clear_request(loop);
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_key(loop, view, 'f', KM_MOD_CTRL, &error) == KM_OK);
-    CHECK(dispatch_key(loop, view, 'k', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'h', KM_MOD_ALT, &error) == KM_OK);
     CHECK(dispatch_text_block(loop, view, (const uint8_t *)"note-", 5,
                               &error) == KM_OK);
     CHECK(dispatch_paste(loop, view, cjk, sizeof(cjk), &error) == KM_OK);
@@ -1097,6 +1171,12 @@ static void test_minibuffer_requests(void)
     CHECK(prompt[0] == '\0');
     CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_ERR_INVALID);
     CHECK(km_command_loop_prompt_active(loop));
+    CHECK(dispatch_text_block(loop, view,
+                              (const uint8_t *)"minibuffer", 10,
+                              &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(strcmp(prompt, " [No matches]") == 0);
+    CHECK(dispatch_key(loop, view, 'k', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_text_block(loop, view,
                               (const uint8_t *)"beg", 3,
                               &error) == KM_OK);
@@ -1229,6 +1309,7 @@ int main(void)
     test_view_buffer_switching();
     test_read_only_and_modified();
     test_char_commands_utf8_boundaries();
+    test_word_commands();
     test_edit_commands_undo_redo_and_view_points();
     test_edit_scope_and_atomic_rejection();
     test_undo_redo_respect_narrowing();

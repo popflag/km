@@ -50,8 +50,24 @@ typedef enum {
     KM_PROMPT_CONFIRM_EXIT
 } KmPromptKind;
 
+typedef struct {
+    uint32_t codepoint;
+    uint32_t modifiers;
+    int command;
+    size_t child;
+    size_t sibling;
+} KmKeyNode;
+
+typedef struct {
+    KmKeyNode *nodes;
+    size_t count;
+    size_t capacity;
+} KmKeymap;
+
 struct KmCommandLoop {
     size_t key_node;
+    KmKeymapId keymap_id;
+    KmKeymap keymaps[KM_KEYMAP_COUNT];
     KmPrefixKind prefix_kind;
     uint64_t prefix_magnitude;
     bool prefix_negative;
@@ -96,75 +112,50 @@ static KmStatus refresh_prompt_completions(KmCommandLoop *loop,
                                            KmError *error);
 
 typedef struct {
-    KmCommandId id;
+    int id;
     const char *name;
     KmCommandCallback callback;
+    uint32_t contexts;
+    uint32_t flags;
 } KmCommandSpec;
-
-typedef struct {
-    uint32_t codepoint;
-    uint32_t modifiers;
-    int command;
-    size_t child;
-    size_t sibling;
-} KmKeyNode;
 
 enum {
     KM_INTERNAL_UNIVERSAL_ARGUMENT = 100,
     KM_INTERNAL_EXIT,
     KM_INTERNAL_SAVE,
-    KM_INTERNAL_SEARCH,
+    KM_INTERNAL_SAVE_ALL_EXIT,
+    KM_INTERNAL_SEARCH_FORWARD,
+    KM_INTERNAL_SEARCH_BACKWARD,
     KM_INTERNAL_FIND_FILE,
     KM_INTERNAL_SWITCH_BUFFER,
     KM_INTERNAL_KILL_BUFFER,
-    KM_INTERNAL_EXTENDED_COMMAND
+    KM_INTERNAL_EXTENDED_COMMAND,
+    KM_INTERNAL_KEYBOARD_QUIT,
+    KM_INTERNAL_MINIBUFFER_BACKSPACE,
+    KM_INTERNAL_MINIBUFFER_CLEAR,
+    KM_INTERNAL_MINIBUFFER_NEXT,
+    KM_INTERNAL_MINIBUFFER_PREVIOUS,
+    KM_INTERNAL_MINIBUFFER_COMPLETE,
+    KM_INTERNAL_MINIBUFFER_ACCEPT_ORIGINAL,
+    KM_INTERNAL_MINIBUFFER_ACCEPT,
+    KM_INTERNAL_ISEARCH_REPEAT_FORWARD,
+    KM_INTERNAL_ISEARCH_REPEAT_BACKWARD,
+    KM_INTERNAL_ISEARCH_BACKSPACE,
+    KM_INTERNAL_ISEARCH_ACCEPT,
+    KM_INTERNAL_CONFIRM_YES,
+    KM_INTERNAL_CONFIRM_NO,
+    KM_INTERNAL_UNDEFINED
 };
 
 #define KM_NO_KEY_NODE SIZE_MAX
 
-static const KmKeyNode key_trie[] = {
-    {0, 0, KM_COMMAND_NONE, 1, KM_NO_KEY_NODE},
-    {'a', KM_MOD_CTRL, KM_COMMAND_BEGINNING_OF_LINE, KM_NO_KEY_NODE, 2},
-    {'b', KM_MOD_CTRL, KM_COMMAND_BACKWARD_CHAR, KM_NO_KEY_NODE, 3},
-    {'d', KM_MOD_CTRL, KM_COMMAND_DELETE_CHAR, KM_NO_KEY_NODE, 4},
-    {'e', KM_MOD_CTRL, KM_COMMAND_END_OF_LINE, KM_NO_KEY_NODE, 5},
-    {'f', KM_MOD_CTRL, KM_COMMAND_FORWARD_CHAR, KM_NO_KEY_NODE, 6},
-    {'n', KM_MOD_CTRL, KM_COMMAND_NEXT_LINE, KM_NO_KEY_NODE, 7},
-    {'p', KM_MOD_CTRL, KM_COMMAND_PREVIOUS_LINE, KM_NO_KEY_NODE, 8},
-    {'w', KM_MOD_CTRL, KM_COMMAND_KILL_REGION, KM_NO_KEY_NODE, 9},
-    {'y', KM_MOD_CTRL, KM_COMMAND_YANK, KM_NO_KEY_NODE, 10},
-    {' ', KM_MOD_CTRL, KM_COMMAND_SET_MARK, KM_NO_KEY_NODE, 11},
-    {0x7f, 0, KM_COMMAND_DELETE_BACKWARD_CHAR, KM_NO_KEY_NODE, 12},
-    {'/', KM_MOD_CTRL, KM_COMMAND_UNDO, KM_NO_KEY_NODE, 13},
-    {'u', KM_MOD_CTRL, KM_INTERNAL_UNIVERSAL_ARGUMENT, KM_NO_KEY_NODE, 14},
-    {'x', KM_MOD_CTRL, KM_COMMAND_NONE, 22, 15},
-    {KM_KEY_LEFT, 0, KM_COMMAND_BACKWARD_CHAR, KM_NO_KEY_NODE, 16},
-    {KM_KEY_RIGHT, 0, KM_COMMAND_FORWARD_CHAR, KM_NO_KEY_NODE, 17},
-    {KM_KEY_UP, 0, KM_COMMAND_PREVIOUS_LINE, KM_NO_KEY_NODE, 18},
-    {KM_KEY_DOWN, 0, KM_COMMAND_NEXT_LINE, KM_NO_KEY_NODE, 19},
-    {KM_KEY_HOME, 0, KM_COMMAND_BEGINNING_OF_LINE, KM_NO_KEY_NODE, 20},
-    {KM_KEY_END, 0, KM_COMMAND_END_OF_LINE, KM_NO_KEY_NODE, 21},
-    {KM_KEY_DELETE, 0, KM_COMMAND_DELETE_CHAR, KM_NO_KEY_NODE, 27},
-    {'u', 0, KM_COMMAND_UNDO, KM_NO_KEY_NODE, 23},
-    {'r', KM_MOD_CTRL, KM_COMMAND_REDO, KM_NO_KEY_NODE, 24},
-    {'x', KM_MOD_CTRL, KM_COMMAND_EXCHANGE_POINT_AND_MARK,
-     KM_NO_KEY_NODE, 25},
-    {'s', KM_MOD_CTRL, KM_INTERNAL_SAVE, KM_NO_KEY_NODE, 26},
-    {'c', KM_MOD_CTRL, KM_INTERNAL_EXIT, KM_NO_KEY_NODE, 30},
-    {'k', KM_MOD_CTRL, KM_COMMAND_KILL_LINE, KM_NO_KEY_NODE, 28},
-    {'w', KM_MOD_ALT, KM_COMMAND_COPY_REGION, KM_NO_KEY_NODE, 29},
-    {'s', KM_MOD_CTRL, KM_INTERNAL_SEARCH, KM_NO_KEY_NODE, 33},
-    {'f', KM_MOD_CTRL, KM_INTERNAL_FIND_FILE, KM_NO_KEY_NODE, 31},
-    {'b', 0, KM_INTERNAL_SWITCH_BUFFER, KM_NO_KEY_NODE, 32},
-    {'k', 0, KM_INTERNAL_KILL_BUFFER, KM_NO_KEY_NODE, KM_NO_KEY_NODE},
-    {'x', KM_MOD_ALT, KM_INTERNAL_EXTENDED_COMMAND,
-     KM_NO_KEY_NODE, 34},
-    {'v', KM_MOD_CTRL, KM_COMMAND_SCROLL_UP, KM_NO_KEY_NODE, 35},
-    {'v', KM_MOD_ALT, KM_COMMAND_SCROLL_DOWN, KM_NO_KEY_NODE, 36},
-    {'r', KM_MOD_CTRL, KM_INTERNAL_SEARCH, KM_NO_KEY_NODE, 37},
-    {'m', KM_MOD_ALT, KM_COMMAND_BACK_TO_INDENTATION,
-     KM_NO_KEY_NODE, KM_NO_KEY_NODE},
+enum {
+    KM_COMMAND_MX = 1u << 0,
+    KM_COMMAND_RECORD_LAST = 1u << 1,
+    KM_COMMAND_KEEP_PREFIX = 1u << 2
 };
+
+#define KM_CONTEXT(id) (1u << (unsigned)(id))
 
 static KmStatus fail(KmError *error, KmStatus status, const char *operation)
 {
@@ -324,6 +315,112 @@ static KmStatus copy_accessible_text(KmBuffer *buffer, uint8_t **out_text,
     *out_len = len;
     *out_point = point.v - start.v;
     return KM_OK;
+}
+
+static bool word_constituent(int32_t codepoint)
+{
+    utf8proc_category_t category = utf8proc_category(codepoint);
+
+    /* ponytail: Replace this approximation when mode syntax tables exist. */
+    return (category >= UTF8PROC_CATEGORY_LU &&
+            category <= UTF8PROC_CATEGORY_ME) ||
+           (category >= UTF8PROC_CATEGORY_ND &&
+            category <= UTF8PROC_CATEGORY_NO) ||
+           category == UTF8PROC_CATEGORY_SO;
+}
+
+static size_t previous_codepoint_start(const uint8_t *text, size_t position)
+{
+    --position;
+    while (position != 0 && (text[position] & 0xc0u) == 0x80u) --position;
+    return position;
+}
+
+static KmStatus move_words(KmView *view, int64_t argument, KmError *error)
+{
+    uint8_t *text = NULL;
+    KmBytePos point;
+    KmBytePos start;
+    KmBytePos end;
+    size_t len;
+    size_t position;
+    uint64_t remaining = command_magnitude(argument);
+    bool backward = argument < 0;
+    KmStatus status;
+
+    status = validate_view(view, false, &point, &start, &end, error);
+    if (status != KM_OK) return status;
+    status = copy_accessible_text(view->buffer, &text, &len, &position, view,
+                                  error);
+    if (status != KM_OK) return status;
+
+    while (remaining != 0) {
+        bool found = false;
+
+        if (backward) {
+            while (position != 0) {
+                int32_t codepoint;
+                size_t consumed;
+                size_t previous = previous_codepoint_start(text, position);
+                status = km_unicode_decode(text, len, previous, &codepoint,
+                                           &consumed, error);
+                if (status != KM_OK) goto done;
+                if (word_constituent(codepoint)) {
+                    found = true;
+                    break;
+                }
+                position = previous;
+            }
+            if (!found) {
+                status = fail(error, KM_ERR_INVALID, "move words");
+                goto done;
+            }
+            while (position != 0) {
+                int32_t codepoint;
+                size_t consumed;
+                size_t previous = previous_codepoint_start(text, position);
+                status = km_unicode_decode(text, len, previous, &codepoint,
+                                           &consumed, error);
+                if (status != KM_OK) goto done;
+                if (!word_constituent(codepoint)) break;
+                position = previous;
+            }
+        } else {
+            while (position < len) {
+                int32_t codepoint;
+                size_t consumed;
+                status = km_unicode_decode(text, len, position, &codepoint,
+                                           &consumed, error);
+                if (status != KM_OK) goto done;
+                if (word_constituent(codepoint)) {
+                    found = true;
+                    break;
+                }
+                position += consumed;
+            }
+            if (!found) {
+                status = fail(error, KM_ERR_INVALID, "move words");
+                goto done;
+            }
+            while (position < len) {
+                int32_t codepoint;
+                size_t consumed;
+                status = km_unicode_decode(text, len, position, &codepoint,
+                                           &consumed, error);
+                if (status != KM_OK) goto done;
+                if (!word_constituent(codepoint)) break;
+                position += consumed;
+            }
+        }
+        --remaining;
+    }
+    status = km_anchor_set(
+        view->point, (KmBytePos){start.v + position}, error);
+    if (status == KM_OK) view->preferred_column_set = false;
+
+done:
+    free(text);
+    return status;
 }
 
 static size_t line_start_at(const uint8_t *text, size_t point)
@@ -1120,6 +1217,16 @@ KmStatus km_view_backward_char(KmView *view, KmError *error)
     return move_chars(view, -1, error);
 }
 
+KmStatus km_view_forward_word(KmView *view, KmError *error)
+{
+    return move_words(view, 1, error);
+}
+
+KmStatus km_view_backward_word(KmView *view, KmError *error)
+{
+    return move_words(view, -1, error);
+}
+
 KmStatus km_view_delete_char(KmView *view, KmError *error)
 {
     return delete_chars(view, 1, KM_COMMAND_DELETE_CHAR, error);
@@ -1200,6 +1307,20 @@ static KmStatus command_backward(KmCommandLoop *loop, KmView *view,
 {
     (void)loop;
     return move_chars(view, -argument, error);
+}
+
+static KmStatus command_forward_word(KmCommandLoop *loop, KmView *view,
+                                     int64_t argument, KmError *error)
+{
+    (void)loop;
+    return move_words(view, argument, error);
+}
+
+static KmStatus command_backward_word(KmCommandLoop *loop, KmView *view,
+                                      int64_t argument, KmError *error)
+{
+    (void)loop;
+    return move_words(view, -argument, error);
 }
 
 static KmStatus command_delete(KmCommandLoop *loop, KmView *view,
@@ -1485,35 +1606,176 @@ static KmStatus command_scroll_down(KmCommandLoop *loop, KmView *view,
                           error);
 }
 
+static KmStatus command_universal_argument(KmCommandLoop *loop, KmView *view,
+                                           int64_t argument, KmError *error);
+static KmStatus command_request_exit(KmCommandLoop *loop, KmView *view,
+                                     int64_t argument, KmError *error);
+static KmStatus command_request_save(KmCommandLoop *loop, KmView *view,
+                                     int64_t argument, KmError *error);
+static KmStatus command_request_save_all_exit(KmCommandLoop *loop,
+                                              KmView *view, int64_t argument,
+                                              KmError *error);
+static KmStatus command_start_search_forward(KmCommandLoop *loop, KmView *view,
+                                             int64_t argument,
+                                             KmError *error);
+static KmStatus command_start_search_backward(KmCommandLoop *loop,
+                                              KmView *view, int64_t argument,
+                                              KmError *error);
+static KmStatus command_find_file(KmCommandLoop *loop, KmView *view,
+                                  int64_t argument, KmError *error);
+static KmStatus command_switch_buffer(KmCommandLoop *loop, KmView *view,
+                                      int64_t argument, KmError *error);
+static KmStatus command_kill_buffer(KmCommandLoop *loop, KmView *view,
+                                    int64_t argument, KmError *error);
+static KmStatus command_extended(KmCommandLoop *loop, KmView *view,
+                                 int64_t argument, KmError *error);
+static KmStatus command_keyboard_quit(KmCommandLoop *loop, KmView *view,
+                                      int64_t argument, KmError *error);
+static KmStatus command_minibuffer_backspace(KmCommandLoop *loop, KmView *view,
+                                             int64_t argument,
+                                             KmError *error);
+static KmStatus command_minibuffer_clear(KmCommandLoop *loop, KmView *view,
+                                         int64_t argument, KmError *error);
+static KmStatus command_minibuffer_next(KmCommandLoop *loop, KmView *view,
+                                        int64_t argument, KmError *error);
+static KmStatus command_minibuffer_previous(KmCommandLoop *loop, KmView *view,
+                                            int64_t argument,
+                                            KmError *error);
+static KmStatus command_minibuffer_complete(KmCommandLoop *loop, KmView *view,
+                                            int64_t argument,
+                                            KmError *error);
+static KmStatus command_minibuffer_accept_original(
+    KmCommandLoop *loop, KmView *view, int64_t argument, KmError *error);
+static KmStatus command_minibuffer_accept(KmCommandLoop *loop, KmView *view,
+                                          int64_t argument, KmError *error);
+static KmStatus command_isearch_repeat_forward(KmCommandLoop *loop,
+                                               KmView *view, int64_t argument,
+                                               KmError *error);
+static KmStatus command_isearch_repeat_backward(KmCommandLoop *loop,
+                                                KmView *view,
+                                                int64_t argument,
+                                                KmError *error);
+static KmStatus command_isearch_backspace(KmCommandLoop *loop, KmView *view,
+                                          int64_t argument, KmError *error);
+static KmStatus command_isearch_accept(KmCommandLoop *loop, KmView *view,
+                                       int64_t argument, KmError *error);
+static KmStatus command_confirm_yes(KmCommandLoop *loop, KmView *view,
+                                    int64_t argument, KmError *error);
+static KmStatus command_confirm_no(KmCommandLoop *loop, KmView *view,
+                                   int64_t argument, KmError *error);
+static KmStatus command_undefined(KmCommandLoop *loop, KmView *view,
+                                  int64_t argument, KmError *error);
+
 static const KmCommandSpec command_registry[] = {
-    {KM_COMMAND_FORWARD_CHAR, "forward-char", command_forward},
-    {KM_COMMAND_BACKWARD_CHAR, "backward-char", command_backward},
-    {KM_COMMAND_DELETE_CHAR, "delete-char", command_delete},
+    {KM_COMMAND_FORWARD_CHAR, "forward-char", command_forward,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_BACKWARD_CHAR, "backward-char", command_backward,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_FORWARD_WORD, "forward-word", command_forward_word,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_BACKWARD_WORD, "backward-word", command_backward_word,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_DELETE_CHAR, "delete-char", command_delete,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
     {KM_COMMAND_DELETE_BACKWARD_CHAR, "delete-backward-char",
-     command_delete_backward},
+     command_delete_backward, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+     KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
     {KM_COMMAND_BEGINNING_OF_LINE, "beginning-of-line",
-     command_beginning_of_line},
+     command_beginning_of_line, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+     KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
     {KM_COMMAND_BACK_TO_INDENTATION, "back-to-indentation",
-     command_back_to_indentation},
-    {KM_COMMAND_END_OF_LINE, "end-of-line", command_end_of_line},
-    {KM_COMMAND_NEXT_LINE, "next-line", command_next_line},
-    {KM_COMMAND_PREVIOUS_LINE, "previous-line", command_previous_line},
-    {KM_COMMAND_SET_MARK, "set-mark-command", command_set_mark},
+     command_back_to_indentation, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+     KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_END_OF_LINE, "end-of-line", command_end_of_line,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_NEXT_LINE, "next-line", command_next_line,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_PREVIOUS_LINE, "previous-line", command_previous_line,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_SET_MARK, "set-mark-command", command_set_mark,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
     {KM_COMMAND_EXCHANGE_POINT_AND_MARK, "exchange-point-and-mark",
-     command_exchange_mark},
-    {KM_COMMAND_KILL_REGION, "kill-region", command_kill_region},
-    {KM_COMMAND_COPY_REGION, "copy-region-as-kill", command_copy_region},
-    {KM_COMMAND_KILL_LINE, "kill-line", command_kill_line},
-    {KM_COMMAND_YANK, "yank", command_yank},
-    {KM_COMMAND_UNDO, "undo", command_undo},
-    {KM_COMMAND_REDO, "undo-redo", command_redo},
-    {KM_COMMAND_SCROLL_UP, "scroll-up-command", command_scroll_up},
-    {KM_COMMAND_SCROLL_DOWN, "scroll-down-command", command_scroll_down},
+     command_exchange_mark, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+     KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_KILL_REGION, "kill-region", command_kill_region,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_COPY_REGION, "copy-region-as-kill", command_copy_region,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_KILL_LINE, "kill-line", command_kill_line,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_YANK, "yank", command_yank, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+     KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_UNDO, "undo", command_undo, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+     KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_REDO, "undo-redo", command_redo,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_SCROLL_UP, "scroll-up-command", command_scroll_up,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_SCROLL_DOWN, "scroll-down-command", command_scroll_down,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_INTERNAL_UNIVERSAL_ARGUMENT, "universal-argument",
+     command_universal_argument, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+     KM_COMMAND_KEEP_PREFIX},
+    {KM_INTERNAL_EXIT, "exit-editor", command_request_exit,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), 0},
+    {KM_INTERNAL_SAVE, "save-buffer", command_request_save,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX},
+    {KM_INTERNAL_SAVE_ALL_EXIT, "save-buffers-kill-terminal",
+     command_request_save_all_exit, KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX},
+    {KM_INTERNAL_SEARCH_FORWARD, "isearch-forward",
+     command_start_search_forward, KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX},
+    {KM_INTERNAL_SEARCH_BACKWARD, "isearch-backward",
+     command_start_search_backward, KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX},
+    {KM_INTERNAL_FIND_FILE, "find-file", command_find_file,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX},
+    {KM_INTERNAL_SWITCH_BUFFER, "switch-to-buffer", command_switch_buffer,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX},
+    {KM_INTERNAL_KILL_BUFFER, "kill-buffer", command_kill_buffer,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX},
+    {KM_INTERNAL_EXTENDED_COMMAND, "execute-extended-command", command_extended,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), 0},
+    {KM_INTERNAL_KEYBOARD_QUIT, "keyboard-quit", command_keyboard_quit,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL) | KM_CONTEXT(KM_KEYMAP_MINIBUFFER) |
+         KM_CONTEXT(KM_KEYMAP_ISEARCH) |
+         KM_CONTEXT(KM_KEYMAP_CONFIRMATION),
+     0},
+    {KM_INTERNAL_MINIBUFFER_BACKSPACE, "minibuffer-backspace",
+     command_minibuffer_backspace, KM_CONTEXT(KM_KEYMAP_MINIBUFFER), 0},
+    {KM_INTERNAL_MINIBUFFER_CLEAR, "minibuffer-clear",
+     command_minibuffer_clear, KM_CONTEXT(KM_KEYMAP_MINIBUFFER), 0},
+    {KM_INTERNAL_MINIBUFFER_NEXT, "minibuffer-next-completion",
+     command_minibuffer_next, KM_CONTEXT(KM_KEYMAP_MINIBUFFER), 0},
+    {KM_INTERNAL_MINIBUFFER_PREVIOUS, "minibuffer-previous-completion",
+     command_minibuffer_previous, KM_CONTEXT(KM_KEYMAP_MINIBUFFER), 0},
+    {KM_INTERNAL_MINIBUFFER_COMPLETE, "minibuffer-complete",
+     command_minibuffer_complete, KM_CONTEXT(KM_KEYMAP_MINIBUFFER), 0},
+    {KM_INTERNAL_MINIBUFFER_ACCEPT_ORIGINAL, "minibuffer-accept-original",
+     command_minibuffer_accept_original, KM_CONTEXT(KM_KEYMAP_MINIBUFFER), 0},
+    {KM_INTERNAL_MINIBUFFER_ACCEPT, "minibuffer-accept",
+     command_minibuffer_accept, KM_CONTEXT(KM_KEYMAP_MINIBUFFER), 0},
+    {KM_INTERNAL_ISEARCH_REPEAT_FORWARD, "isearch-repeat-forward",
+     command_isearch_repeat_forward, KM_CONTEXT(KM_KEYMAP_ISEARCH), 0},
+    {KM_INTERNAL_ISEARCH_REPEAT_BACKWARD, "isearch-repeat-backward",
+     command_isearch_repeat_backward, KM_CONTEXT(KM_KEYMAP_ISEARCH), 0},
+    {KM_INTERNAL_ISEARCH_BACKSPACE, "isearch-backspace",
+     command_isearch_backspace, KM_CONTEXT(KM_KEYMAP_ISEARCH), 0},
+    {KM_INTERNAL_ISEARCH_ACCEPT, "isearch-accept", command_isearch_accept,
+     KM_CONTEXT(KM_KEYMAP_ISEARCH), 0},
+    {KM_INTERNAL_CONFIRM_YES, "confirmation-yes", command_confirm_yes,
+     KM_CONTEXT(KM_KEYMAP_CONFIRMATION), 0},
+    {KM_INTERNAL_CONFIRM_NO, "confirmation-no", command_confirm_no,
+     KM_CONTEXT(KM_KEYMAP_CONFIRMATION), 0},
+    {KM_INTERNAL_UNDEFINED, "undefined", command_undefined,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL) | KM_CONTEXT(KM_KEYMAP_MINIBUFFER) |
+         KM_CONTEXT(KM_KEYMAP_ISEARCH) |
+         KM_CONTEXT(KM_KEYMAP_CONFIRMATION),
+     0},
 };
 
 static void reset_command_input(KmCommandLoop *loop)
 {
     loop->key_node = 0;
+    loop->keymap_id = KM_KEYMAP_GLOBAL;
     loop->prefix_kind = KM_PREFIX_NONE;
     loop->prefix_magnitude = 0;
     loop->prefix_negative = false;
@@ -1563,22 +1825,22 @@ static KmStatus validate_event(const KmEvent *event, KmError *error)
     return KM_OK;
 }
 
-static size_t find_key_child(size_t parent, uint32_t codepoint,
-                             uint32_t modifiers)
+static size_t find_key_child(const KmKeymap *keymap, size_t parent,
+                             uint32_t codepoint, uint32_t modifiers)
 {
-    size_t node = key_trie[parent].child;
+    size_t node = keymap->nodes[parent].child;
 
     while (node != KM_NO_KEY_NODE) {
-        if (key_trie[node].codepoint == codepoint &&
-            key_trie[node].modifiers == modifiers) {
+        if (keymap->nodes[node].codepoint == codepoint &&
+            keymap->nodes[node].modifiers == modifiers) {
             return node;
         }
-        node = key_trie[node].sibling;
+        node = keymap->nodes[node].sibling;
     }
     return KM_NO_KEY_NODE;
 }
 
-static const KmCommandSpec *find_command(KmCommandId id)
+static const KmCommandSpec *find_command(int id)
 {
     size_t i;
 
@@ -1588,11 +1850,107 @@ static const KmCommandSpec *find_command(KmCommandId id)
     return NULL;
 }
 
-static bool is_quit_key(uint32_t codepoint, uint32_t modifiers)
+static const KmCommandSpec *find_command_name(const char *name)
 {
-    return (codepoint == 'g' || codepoint == 'G') &&
-           (modifiers & KM_MOD_CTRL) != 0 &&
-           (modifiers & KM_MOD_ALT) == 0;
+    size_t i;
+
+    if (name == NULL) return NULL;
+    for (i = 0; i < sizeof(command_registry) / sizeof(command_registry[0]); ++i) {
+        if (strcmp(command_registry[i].name, name) == 0) {
+            return &command_registry[i];
+        }
+    }
+    return NULL;
+}
+
+static KmStatus reserve_keymap(KmKeymap *keymap, size_t required,
+                               KmError *error)
+{
+    size_t capacity;
+    KmKeyNode *nodes;
+
+    if (required <= keymap->capacity) return KM_OK;
+    capacity = keymap->capacity == 0 ? 16 : keymap->capacity;
+    while (capacity < required) {
+        if (capacity > SIZE_MAX / 2) {
+            capacity = required;
+            break;
+        }
+        capacity *= 2;
+    }
+    if (capacity > SIZE_MAX / sizeof(*nodes)) {
+        return fail(error, KM_ERR_OOM, "keymap binding");
+    }
+    nodes = (KmKeyNode *)realloc(keymap->nodes, capacity * sizeof(*nodes));
+    if (nodes == NULL) return fail(error, KM_ERR_OOM, "keymap binding");
+    keymap->nodes = nodes;
+    keymap->capacity = capacity;
+    return KM_OK;
+}
+
+static KmStatus bind_key(KmCommandLoop *loop, KmKeymapId keymap_id,
+                         const KmKeyStroke *sequence, size_t count,
+                         const KmCommandSpec *command, KmError *error)
+{
+    KmKeymap *keymap;
+    size_t node = 0;
+    size_t existing = 0;
+    size_t i;
+    KmStatus status;
+
+    if (loop == NULL || keymap_id < KM_KEYMAP_GLOBAL ||
+        keymap_id >= KM_KEYMAP_COUNT || sequence == NULL || count == 0 ||
+        command == NULL ||
+        (command->contexts & KM_CONTEXT(keymap_id)) == 0) {
+        return fail(error, KM_ERR_INVALID, "keymap binding");
+    }
+    for (i = 0; i < count; ++i) {
+        if (!valid_key_code(sequence[i].codepoint) ||
+            (sequence[i].modifiers &
+             ~(uint32_t)(KM_MOD_CTRL | KM_MOD_ALT | KM_MOD_SHIFT)) != 0) {
+            return fail(error, KM_ERR_INVALID, "keymap binding");
+        }
+    }
+    keymap = &loop->keymaps[keymap_id];
+    while (existing < count) {
+        size_t child = find_key_child(keymap, node,
+                                      sequence[existing].codepoint,
+                                      sequence[existing].modifiers);
+        if (child == KM_NO_KEY_NODE) break;
+        node = child;
+        ++existing;
+        if (existing < count && keymap->nodes[node].command != KM_COMMAND_NONE) {
+            return fail(error, KM_ERR_CONFLICT, "keymap binding");
+        }
+    }
+    if (existing == count) {
+        if (keymap->nodes[node].child != KM_NO_KEY_NODE) {
+            return fail(error, KM_ERR_CONFLICT, "keymap binding");
+        }
+        keymap->nodes[node].command = command->id;
+        return KM_OK;
+    }
+    if (count - existing > SIZE_MAX - keymap->count) {
+        return fail(error, KM_ERR_OOM, "keymap binding");
+    }
+    status = reserve_keymap(keymap, keymap->count + count - existing, error);
+    if (status != KM_OK) return status;
+    for (i = existing; i < count; ++i) {
+        size_t next = keymap->count++;
+        KmKeyNode *parent = &keymap->nodes[node];
+
+        keymap->nodes[next] = (KmKeyNode){
+            sequence[i].codepoint,
+            sequence[i].modifiers,
+            KM_COMMAND_NONE,
+            KM_NO_KEY_NODE,
+            parent->child,
+        };
+        parent->child = next;
+        node = next;
+    }
+    keymap->nodes[node].command = command->id;
+    return KM_OK;
 }
 
 static KmStatus append_prefix_digit(KmCommandLoop *loop, uint32_t digit,
@@ -1656,27 +2014,34 @@ static KmStatus universal_argument(KmCommandLoop *loop, KmError *error)
 }
 
 static KmStatus execute_registered_with_argument(
-    KmCommandLoop *loop, KmView *view, KmCommandId id, int64_t argument,
-    bool has_argument, bool page_opposite, KmError *error)
+    KmCommandLoop *loop, KmView *view, int id, KmKeymapId context,
+    int64_t argument, bool has_argument, bool page_opposite, KmError *error)
 {
     const KmCommandSpec *command = find_command(id);
     KmStatus status;
 
-    reset_command_input(loop);
-    if (command == NULL) {
+    if (command == NULL ||
+        (command->contexts & KM_CONTEXT(context)) == 0) {
+        reset_command_input(loop);
         return fail(error, KM_ERR_INVALID, "command registry");
+    }
+    if ((command->flags & KM_COMMAND_KEEP_PREFIX) == 0) {
+        reset_command_input(loop);
     }
     loop->command_has_argument = has_argument;
     loop->command_page_opposite = page_opposite;
     status = command->callback(loop, view, argument, error);
     loop->command_has_argument = false;
     loop->command_page_opposite = false;
-    if (status == KM_OK) loop->last_command = id;
+    if (status == KM_OK && (command->flags & KM_COMMAND_RECORD_LAST) != 0) {
+        loop->last_command = (KmCommandId)id;
+    }
     return status;
 }
 
 static KmStatus execute_registered_command(KmCommandLoop *loop, KmView *view,
-                                           KmCommandId id, KmError *error)
+                                           int id, KmKeymapId context,
+                                           KmError *error)
 {
     int64_t argument = current_argument(loop);
     bool has_argument = loop->prefix_kind != KM_PREFIX_NONE;
@@ -1684,9 +2049,8 @@ static KmStatus execute_registered_command(KmCommandLoop *loop, KmView *view,
                          loop->prefix_negative &&
                          !loop->prefix_has_digits;
 
-    return execute_registered_with_argument(loop, view, id, argument,
-                                            has_argument, page_opposite,
-                                            error);
+    return execute_registered_with_argument(loop, view, id, context, argument,
+                                            has_argument, page_opposite, error);
 }
 
 static size_t encode_scalar(uint32_t codepoint, uint8_t bytes[4])
@@ -1844,50 +2208,6 @@ static void prompt_backspace(KmCommandLoop *loop)
     loop->prompt_text[loop->prompt_len] = '\0';
 }
 
-static KmStatus dispatch_confirmation(KmCommandLoop *loop,
-                                      const KmEvent *event, KmError *error)
-{
-    if (event->kind == KM_EVENT_KEY &&
-        is_quit_key(event->codepoint, event->modifiers)) {
-        loop->prompt_kind = KM_PROMPT_NONE;
-        loop->quit_requested = true;
-        return KM_OK;
-    }
-    if (event->kind == KM_EVENT_TEXT && event->text == NULL &&
-        event->text_len == 0 &&
-        (event->codepoint == 'y' || event->codepoint == 'Y')) {
-        loop->request = loop->prompt_kind == KM_PROMPT_CONFIRM_KILL
-                            ? KM_COMMAND_REQUEST_KILL_BUFFER
-                            : KM_COMMAND_REQUEST_EXIT_CONFIRMED;
-        loop->prompt_kind = KM_PROMPT_NONE;
-        return KM_OK;
-    }
-    if (event->kind == KM_EVENT_TEXT && event->text == NULL &&
-        event->text_len == 0 &&
-        (event->codepoint == 'n' || event->codepoint == 'N')) {
-        loop->prompt_kind = KM_PROMPT_NONE;
-        return KM_OK;
-    }
-    return fail(error, KM_ERR_INVALID, "confirmation key");
-}
-
-static bool prompt_is(const KmCommandLoop *loop, const char *name)
-{
-    size_t len = strlen(name);
-    return loop->prompt_len == len &&
-           memcmp(loop->prompt_text, name, len) == 0;
-}
-
-static const char *const application_commands[] = {
-    "find-file",
-    "switch-to-buffer",
-    "kill-buffer",
-    "save-buffer",
-    "save-buffers-kill-terminal",
-    "isearch-forward",
-    "isearch-backward",
-};
-
 static void clear_completions(KmCommandLoop *loop)
 {
     size_t i;
@@ -1999,9 +2319,7 @@ oom:
 static KmStatus refresh_prompt_completions(KmCommandLoop *loop,
                                            KmError *error)
 {
-    const char *matches[sizeof(command_registry) / sizeof(command_registry[0]) +
-                        sizeof(application_commands) /
-                            sizeof(application_commands[0])];
+    const char *matches[sizeof(command_registry) / sizeof(command_registry[0])];
     size_t count = 0;
     size_t i;
 
@@ -2017,17 +2335,8 @@ static KmStatus refresh_prompt_completions(KmCommandLoop *loop,
     for (i = 0; i < sizeof(command_registry) / sizeof(command_registry[0]); ++i) {
         const char *candidate = command_registry[i].name;
         size_t len = strlen(candidate);
-        if (len >= loop->prompt_len &&
-            (loop->prompt_len == 0 ||
-             memcmp(candidate, loop->prompt_text, loop->prompt_len) == 0)) {
-            matches[count++] = candidate;
-        }
-    }
-    for (i = 0; i < sizeof(application_commands) /
-                        sizeof(application_commands[0]); ++i) {
-        const char *candidate = application_commands[i];
-        size_t len = strlen(candidate);
-        if (len >= loop->prompt_len &&
+        if ((command_registry[i].flags & KM_COMMAND_MX) != 0 &&
+            len >= loop->prompt_len &&
             (loop->prompt_len == 0 ||
              memcmp(candidate, loop->prompt_text, loop->prompt_len) == 0)) {
             matches[count++] = candidate;
@@ -2052,66 +2361,25 @@ static KmStatus complete_prompt(KmCommandLoop *loop, KmError *error)
 static KmStatus execute_named_command(KmCommandLoop *loop, KmView *view,
                                       KmError *error)
 {
-    size_t i;
+    const KmCommandSpec *command;
+    int64_t argument;
+    bool has_argument;
+    bool page_opposite;
 
     if (loop->prompt_len == 0) {
         return fail(error, KM_ERR_INVALID, "command name empty");
     }
-    if (prompt_is(loop, "find-file")) {
-        loop->prompt_kind = KM_PROMPT_FIND_FILE;
-        loop->prompt_len = 0;
-        loop->prompt_text[0] = '\0';
-        return refresh_prompt_completions(loop, error);
+    command = find_command_name((const char *)loop->prompt_text);
+    if (command == NULL || (command->flags & KM_COMMAND_MX) == 0) {
+        return fail(error, KM_ERR_INVALID, "unknown command");
     }
-    if (prompt_is(loop, "switch-to-buffer")) {
-        loop->prompt_kind = KM_PROMPT_SWITCH_BUFFER;
-        loop->prompt_len = 0;
-        loop->prompt_text[0] = '\0';
-        return refresh_prompt_completions(loop, error);
-    }
-    if (prompt_is(loop, "kill-buffer")) {
-        loop->prompt_kind = KM_PROMPT_NONE;
-        if (km_buffer_is_modified(view->buffer)) {
-            loop->prompt_kind = KM_PROMPT_CONFIRM_KILL;
-        } else {
-            loop->request = KM_COMMAND_REQUEST_KILL_BUFFER;
-        }
-        return KM_OK;
-    }
-    if (prompt_is(loop, "save-buffer")) {
-        loop->prompt_kind = KM_PROMPT_NONE;
-        loop->request = KM_COMMAND_REQUEST_SAVE;
-        return KM_OK;
-    }
-    if (prompt_is(loop, "save-buffers-kill-terminal")) {
-        loop->prompt_kind = KM_PROMPT_NONE;
-        loop->request = KM_COMMAND_REQUEST_SAVE_ALL_EXIT;
-        return KM_OK;
-    }
-    if (prompt_is(loop, "isearch-forward") ||
-        prompt_is(loop, "isearch-backward")) {
-        bool forward = prompt_is(loop, "isearch-forward");
-        loop->prompt_kind = KM_PROMPT_NONE;
-        loop->search_origin = km_anchor_get(view->point);
-        loop->search_len = 0;
-        loop->search_active = true;
-        loop->search_forward = forward;
-        loop->search_failed = false;
-        loop->search_wrapped = false;
-        return KM_OK;
-    }
-    for (i = 0; i < sizeof(command_registry) / sizeof(command_registry[0]); ++i) {
-        if (prompt_is(loop, command_registry[i].name)) {
-            int64_t argument = loop->prompt_argument;
-            bool has_argument = loop->prompt_has_argument;
-            bool page_opposite = loop->prompt_page_opposite;
-            loop->prompt_kind = KM_PROMPT_NONE;
-            return execute_registered_with_argument(
-                loop, view, command_registry[i].id, argument,
-                has_argument, page_opposite, error);
-        }
-    }
-    return fail(error, KM_ERR_INVALID, "unknown command");
+    argument = loop->prompt_argument;
+    has_argument = loop->prompt_has_argument;
+    page_opposite = loop->prompt_page_opposite;
+    loop->prompt_kind = KM_PROMPT_NONE;
+    return execute_registered_with_argument(
+        loop, view, command->id, KM_KEYMAP_GLOBAL, argument,
+        has_argument, page_opposite, error);
 }
 
 static bool prompt_ends_in_separator(const KmCommandLoop *loop)
@@ -2176,56 +2444,13 @@ static KmStatus accept_prompt(KmCommandLoop *loop, KmView *view,
     return KM_OK;
 }
 
-static KmStatus dispatch_prompt(KmCommandLoop *loop, KmView *view,
-                                const KmEvent *event, KmError *error)
+static KmStatus dispatch_minibuffer_text(KmCommandLoop *loop,
+                                         const KmEvent *event,
+                                         KmError *error)
 {
     if (loop->prompt_kind == KM_PROMPT_CONFIRM_KILL ||
         loop->prompt_kind == KM_PROMPT_CONFIRM_EXIT) {
-        return dispatch_confirmation(loop, event, error);
-    }
-    if (event->kind == KM_EVENT_KEY &&
-        is_quit_key(event->codepoint, event->modifiers)) {
-        loop->prompt_kind = KM_PROMPT_NONE;
-        if (loop->request == KM_COMMAND_REQUEST_COMPLETE_FILE ||
-            loop->request == KM_COMMAND_REQUEST_COMPLETE_BUFFER) {
-            loop->request = KM_COMMAND_REQUEST_NONE;
-        }
-        loop->quit_requested = true;
-        return KM_OK;
-    }
-    if (event->kind == KM_EVENT_KEY && event->codepoint == 0x7f &&
-        event->modifiers == 0) {
-        return fido_backspace(loop, error);
-    }
-    if (event->kind == KM_EVENT_KEY && event->codepoint == 'k' &&
-        event->modifiers == KM_MOD_CTRL) {
-        loop->prompt_len = 0;
-        if (loop->prompt_text != NULL) loop->prompt_text[0] = '\0';
-        return refresh_prompt_completions(loop, error);
-    }
-    if (event->kind == KM_EVENT_KEY &&
-        ((event->codepoint == KM_KEY_RIGHT && event->modifiers == 0) ||
-         (event->codepoint == 's' && event->modifiers == KM_MOD_CTRL))) {
-        cycle_completion(loop, true);
-        return KM_OK;
-    }
-    if (event->kind == KM_EVENT_KEY &&
-        ((event->codepoint == KM_KEY_LEFT && event->modifiers == 0) ||
-         (event->codepoint == 'r' && event->modifiers == KM_MOD_CTRL))) {
-        cycle_completion(loop, false);
-        return KM_OK;
-    }
-    if (event->kind == KM_EVENT_KEY && event->codepoint == KM_KEY_TAB &&
-        event->modifiers == 0) {
-        return complete_prompt(loop, error);
-    }
-    if (event->kind == KM_EVENT_KEY && event->codepoint == 'j' &&
-        event->modifiers == KM_MOD_ALT) {
-        return accept_prompt(loop, view, false, error);
-    }
-    if (event->kind == KM_EVENT_TEXT && event->text == NULL &&
-        event->text_len == 0 && event->codepoint == '\n') {
-        return accept_prompt(loop, view, true, error);
+        return fail(error, KM_ERR_INVALID, "confirmation key");
     }
     if (event->kind == KM_EVENT_PASTE) {
         KmStatus status =
@@ -2426,40 +2651,299 @@ static KmStatus search_backspace(KmCommandLoop *loop, KmView *view,
     return search_query(loop, view, false, error);
 }
 
-static KmStatus dispatch_search(KmCommandLoop *loop, KmView *view,
-                                const KmEvent *event, KmError *error)
+static KmKeymapId active_keymap(const KmCommandLoop *loop)
 {
-    if (event->kind == KM_EVENT_KEY &&
-        is_quit_key(event->codepoint, event->modifiers)) {
-        KmStatus status = km_anchor_set(
-            view->point, accessible_search_origin(loop, view), error);
+    if (loop->search_active) return KM_KEYMAP_ISEARCH;
+    if (loop->prompt_kind == KM_PROMPT_CONFIRM_KILL ||
+        loop->prompt_kind == KM_PROMPT_CONFIRM_EXIT) {
+        return KM_KEYMAP_CONFIRMATION;
+    }
+    if (loop->prompt_kind != KM_PROMPT_NONE) return KM_KEYMAP_MINIBUFFER;
+    return KM_KEYMAP_GLOBAL;
+}
+
+static KmStatus command_universal_argument(KmCommandLoop *loop, KmView *view,
+                                           int64_t argument, KmError *error)
+{
+    (void)view;
+    (void)argument;
+    return universal_argument(loop, error);
+}
+
+static KmStatus command_request_exit(KmCommandLoop *loop, KmView *view,
+                                     int64_t argument, KmError *error)
+{
+    (void)view;
+    (void)argument;
+    (void)error;
+    loop->request = KM_COMMAND_REQUEST_EXIT;
+    return KM_OK;
+}
+
+static KmStatus command_request_save(KmCommandLoop *loop, KmView *view,
+                                     int64_t argument, KmError *error)
+{
+    (void)view;
+    (void)argument;
+    (void)error;
+    loop->request = KM_COMMAND_REQUEST_SAVE;
+    return KM_OK;
+}
+
+static KmStatus command_request_save_all_exit(KmCommandLoop *loop,
+                                              KmView *view, int64_t argument,
+                                              KmError *error)
+{
+    (void)view;
+    (void)argument;
+    (void)error;
+    loop->request = KM_COMMAND_REQUEST_SAVE_ALL_EXIT;
+    return KM_OK;
+}
+
+static KmStatus start_search(KmCommandLoop *loop, KmView *view, bool forward)
+{
+    loop->search_origin = km_anchor_get(view->point);
+    loop->search_len = 0;
+    loop->search_active = true;
+    loop->search_forward = forward;
+    loop->search_failed = false;
+    loop->search_wrapped = false;
+    return KM_OK;
+}
+
+static KmStatus command_start_search_forward(KmCommandLoop *loop, KmView *view,
+                                             int64_t argument, KmError *error)
+{
+    (void)argument;
+    (void)error;
+    return start_search(loop, view, true);
+}
+
+static KmStatus command_start_search_backward(KmCommandLoop *loop,
+                                              KmView *view, int64_t argument,
+                                              KmError *error)
+{
+    (void)argument;
+    (void)error;
+    return start_search(loop, view, false);
+}
+
+static KmStatus command_find_file(KmCommandLoop *loop, KmView *view,
+                                  int64_t argument, KmError *error)
+{
+    KmStatus status;
+    (void)view;
+    (void)argument;
+    status = begin_prompt(loop, KM_PROMPT_FIND_FILE, error);
+    return status == KM_OK ? refresh_prompt_completions(loop, error) : status;
+}
+
+static KmStatus command_switch_buffer(KmCommandLoop *loop, KmView *view,
+                                      int64_t argument, KmError *error)
+{
+    KmStatus status;
+    (void)view;
+    (void)argument;
+    status = begin_prompt(loop, KM_PROMPT_SWITCH_BUFFER, error);
+    return status == KM_OK ? refresh_prompt_completions(loop, error) : status;
+}
+
+static KmStatus command_kill_buffer(KmCommandLoop *loop, KmView *view,
+                                    int64_t argument, KmError *error)
+{
+    (void)argument;
+    if (km_buffer_is_modified(view->buffer)) {
+        return begin_prompt(loop, KM_PROMPT_CONFIRM_KILL, error);
+    }
+    loop->request = KM_COMMAND_REQUEST_KILL_BUFFER;
+    return KM_OK;
+}
+
+static KmStatus command_extended(KmCommandLoop *loop, KmView *view,
+                                 int64_t argument, KmError *error)
+{
+    bool has_argument = loop->command_has_argument;
+    bool page_opposite = loop->command_page_opposite;
+    KmStatus status;
+    (void)view;
+
+    status = begin_prompt(loop, KM_PROMPT_COMMAND, error);
+    if (status == KM_OK) {
+        loop->prompt_argument = argument;
+        loop->prompt_has_argument = has_argument;
+        loop->prompt_page_opposite = page_opposite;
+        status = refresh_prompt_completions(loop, error);
+    }
+    return status;
+}
+
+static KmStatus command_keyboard_quit(KmCommandLoop *loop, KmView *view,
+                                      int64_t argument, KmError *error)
+{
+    KmKeymapId context = active_keymap(loop);
+    KmStatus status = KM_OK;
+    (void)argument;
+
+    if (context == KM_KEYMAP_ISEARCH) {
+        status = km_anchor_set(view->point,
+                               accessible_search_origin(loop, view), error);
         loop->search_active = false;
         loop->search_failed = false;
         loop->search_wrapped = false;
         view->buffer->mark_active = false;
-        loop->quit_requested = true;
-        return status;
+    } else if (context == KM_KEYMAP_MINIBUFFER ||
+               context == KM_KEYMAP_CONFIRMATION) {
+        loop->prompt_kind = KM_PROMPT_NONE;
+        if (loop->request == KM_COMMAND_REQUEST_COMPLETE_FILE ||
+            loop->request == KM_COMMAND_REQUEST_COMPLETE_BUFFER) {
+            loop->request = KM_COMMAND_REQUEST_NONE;
+        }
+    } else {
+        view->buffer->mark_active = false;
     }
-    if (event->kind == KM_EVENT_KEY &&
-        (event->codepoint == 's' || event->codepoint == 'r') &&
-        event->modifiers == KM_MOD_CTRL) {
-        loop->search_forward = event->codepoint == 's';
-        return search_query(loop, view, true, error);
-    }
-    if (event->kind == KM_EVENT_KEY && event->codepoint == 0x7f &&
-        event->modifiers == 0) {
-        return search_backspace(loop, view, error);
-    }
-    if (event->kind == KM_EVENT_TEXT && event->text == NULL &&
-        event->text_len == 0 && event->codepoint == '\n') {
-        loop->search_active = false;
-        loop->search_failed = false;
-        loop->search_wrapped = false;
-        loop->last_command = loop->search_forward
-                                 ? KM_COMMAND_SEARCH_FORWARD
-                                 : KM_COMMAND_SEARCH_BACKWARD;
-        return KM_OK;
-    }
+    loop->quit_requested = true;
+    return status;
+}
+
+static KmStatus command_minibuffer_backspace(KmCommandLoop *loop, KmView *view,
+                                             int64_t argument,
+                                             KmError *error)
+{
+    (void)view;
+    (void)argument;
+    return fido_backspace(loop, error);
+}
+
+static KmStatus command_minibuffer_clear(KmCommandLoop *loop, KmView *view,
+                                         int64_t argument, KmError *error)
+{
+    (void)view;
+    (void)argument;
+    loop->prompt_len = 0;
+    if (loop->prompt_text != NULL) loop->prompt_text[0] = '\0';
+    return refresh_prompt_completions(loop, error);
+}
+
+static KmStatus command_minibuffer_next(KmCommandLoop *loop, KmView *view,
+                                        int64_t argument, KmError *error)
+{
+    (void)view;
+    (void)argument;
+    (void)error;
+    cycle_completion(loop, true);
+    return KM_OK;
+}
+
+static KmStatus command_minibuffer_previous(KmCommandLoop *loop, KmView *view,
+                                            int64_t argument,
+                                            KmError *error)
+{
+    (void)view;
+    (void)argument;
+    (void)error;
+    cycle_completion(loop, false);
+    return KM_OK;
+}
+
+static KmStatus command_minibuffer_complete(KmCommandLoop *loop, KmView *view,
+                                            int64_t argument,
+                                            KmError *error)
+{
+    (void)view;
+    (void)argument;
+    return complete_prompt(loop, error);
+}
+
+static KmStatus command_minibuffer_accept_original(
+    KmCommandLoop *loop, KmView *view, int64_t argument, KmError *error)
+{
+    (void)argument;
+    return accept_prompt(loop, view, false, error);
+}
+
+static KmStatus command_minibuffer_accept(KmCommandLoop *loop, KmView *view,
+                                          int64_t argument, KmError *error)
+{
+    (void)argument;
+    return accept_prompt(loop, view, true, error);
+}
+
+static KmStatus command_isearch_repeat_forward(KmCommandLoop *loop,
+                                               KmView *view, int64_t argument,
+                                               KmError *error)
+{
+    (void)argument;
+    loop->search_forward = true;
+    return search_query(loop, view, true, error);
+}
+
+static KmStatus command_isearch_repeat_backward(KmCommandLoop *loop,
+                                                KmView *view,
+                                                int64_t argument,
+                                                KmError *error)
+{
+    (void)argument;
+    loop->search_forward = false;
+    return search_query(loop, view, true, error);
+}
+
+static KmStatus command_isearch_backspace(KmCommandLoop *loop, KmView *view,
+                                          int64_t argument, KmError *error)
+{
+    (void)argument;
+    return search_backspace(loop, view, error);
+}
+
+static KmStatus command_isearch_accept(KmCommandLoop *loop, KmView *view,
+                                       int64_t argument, KmError *error)
+{
+    (void)view;
+    (void)argument;
+    (void)error;
+    loop->search_active = false;
+    loop->search_failed = false;
+    loop->search_wrapped = false;
+    loop->last_command = loop->search_forward ? KM_COMMAND_SEARCH_FORWARD
+                                               : KM_COMMAND_SEARCH_BACKWARD;
+    return KM_OK;
+}
+
+static KmStatus command_confirm_yes(KmCommandLoop *loop, KmView *view,
+                                    int64_t argument, KmError *error)
+{
+    (void)view;
+    (void)argument;
+    (void)error;
+    loop->request = loop->prompt_kind == KM_PROMPT_CONFIRM_KILL
+                        ? KM_COMMAND_REQUEST_KILL_BUFFER
+                        : KM_COMMAND_REQUEST_EXIT_CONFIRMED;
+    loop->prompt_kind = KM_PROMPT_NONE;
+    return KM_OK;
+}
+
+static KmStatus command_confirm_no(KmCommandLoop *loop, KmView *view,
+                                   int64_t argument, KmError *error)
+{
+    (void)view;
+    (void)argument;
+    (void)error;
+    loop->prompt_kind = KM_PROMPT_NONE;
+    return KM_OK;
+}
+
+static KmStatus command_undefined(KmCommandLoop *loop, KmView *view,
+                                  int64_t argument, KmError *error)
+{
+    (void)loop;
+    (void)view;
+    (void)argument;
+    return fail(error, KM_ERR_INVALID, "undefined key");
+}
+
+static KmStatus dispatch_isearch_text(KmCommandLoop *loop, KmView *view,
+                                      const KmEvent *event, KmError *error)
+{
     if (event->kind == KM_EVENT_TEXT) {
         if (event->text != NULL || event->text_len != 0) {
             return append_search_query(loop, view, event->text, event->text_len,
@@ -2473,28 +2957,119 @@ static KmStatus dispatch_search(KmCommandLoop *loop, KmView *view,
     return fail(error, KM_ERR_INVALID, "search key");
 }
 
+typedef struct {
+    KmKeymapId keymap;
+    size_t count;
+    KmKeyStroke sequence[2];
+    const char *command_name;
+} KmDefaultBinding;
+
+#define KM_BIND1(map, code, mods, command)                                     \
+    { (map), 1, {{(code), (mods)}, {0, 0}}, (command) }
+#define KM_BIND2(map, code1, mods1, code2, mods2, command)                    \
+    { (map), 2, {{(code1), (mods1)}, {(code2), (mods2)}}, (command) }
+
+static const KmDefaultBinding default_bindings[] = {
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'a', KM_MOD_CTRL, "beginning-of-line"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'b', KM_MOD_CTRL, "backward-char"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'd', KM_MOD_CTRL, "delete-char"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'e', KM_MOD_CTRL, "end-of-line"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'f', KM_MOD_CTRL, "forward-char"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'g', KM_MOD_CTRL, "keyboard-quit"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'k', KM_MOD_CTRL, "kill-line"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'n', KM_MOD_CTRL, "next-line"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'p', KM_MOD_CTRL, "previous-line"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'r', KM_MOD_CTRL, "isearch-backward"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 's', KM_MOD_CTRL, "isearch-forward"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'u', KM_MOD_CTRL, "universal-argument"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'v', KM_MOD_CTRL, "scroll-up-command"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'w', KM_MOD_CTRL, "kill-region"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'y', KM_MOD_CTRL, "yank"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, ' ', KM_MOD_CTRL, "set-mark-command"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, '/', KM_MOD_CTRL, "undo"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 0x7f, 0, "delete-backward-char"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, KM_KEY_LEFT, 0, "backward-char"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, KM_KEY_RIGHT, 0, "forward-char"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, KM_KEY_UP, 0, "previous-line"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, KM_KEY_DOWN, 0, "next-line"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, KM_KEY_HOME, 0, "beginning-of-line"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, KM_KEY_END, 0, "end-of-line"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, KM_KEY_DELETE, 0, "delete-char"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'b', KM_MOD_ALT, "backward-word"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'f', KM_MOD_ALT, "forward-word"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'm', KM_MOD_ALT, "back-to-indentation"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'v', KM_MOD_ALT, "scroll-down-command"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'w', KM_MOD_ALT, "copy-region-as-kill"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, 'x', KM_MOD_ALT, "execute-extended-command"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'b', 0,
+             "switch-to-buffer"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'c', KM_MOD_CTRL,
+             "exit-editor"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'f', KM_MOD_CTRL,
+             "find-file"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'k', 0, "kill-buffer"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'r', KM_MOD_CTRL,
+             "undo-redo"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 's', KM_MOD_CTRL,
+             "save-buffer"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'u', 0, "undo"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'x', KM_MOD_CTRL,
+             "exchange-point-and-mark"),
+
+    KM_BIND1(KM_KEYMAP_MINIBUFFER, 'g', KM_MOD_CTRL, "keyboard-quit"),
+    KM_BIND1(KM_KEYMAP_MINIBUFFER, 'k', KM_MOD_CTRL, "minibuffer-clear"),
+    KM_BIND1(KM_KEYMAP_MINIBUFFER, 'r', KM_MOD_CTRL,
+             "minibuffer-previous-completion"),
+    KM_BIND1(KM_KEYMAP_MINIBUFFER, 's', KM_MOD_CTRL,
+             "minibuffer-next-completion"),
+    KM_BIND1(KM_KEYMAP_MINIBUFFER, 'j', KM_MOD_ALT,
+             "minibuffer-accept-original"),
+    KM_BIND1(KM_KEYMAP_MINIBUFFER, 0x7f, 0, "minibuffer-backspace"),
+    KM_BIND1(KM_KEYMAP_MINIBUFFER, KM_KEY_LEFT, 0,
+             "minibuffer-previous-completion"),
+    KM_BIND1(KM_KEYMAP_MINIBUFFER, KM_KEY_RIGHT, 0,
+             "minibuffer-next-completion"),
+    KM_BIND1(KM_KEYMAP_MINIBUFFER, KM_KEY_TAB, 0, "minibuffer-complete"),
+    KM_BIND1(KM_KEYMAP_MINIBUFFER, '\n', 0, "minibuffer-accept"),
+
+    KM_BIND1(KM_KEYMAP_ISEARCH, 'g', KM_MOD_CTRL, "keyboard-quit"),
+    KM_BIND1(KM_KEYMAP_ISEARCH, 'r', KM_MOD_CTRL,
+             "isearch-repeat-backward"),
+    KM_BIND1(KM_KEYMAP_ISEARCH, 's', KM_MOD_CTRL,
+             "isearch-repeat-forward"),
+    KM_BIND1(KM_KEYMAP_ISEARCH, 0x7f, 0, "isearch-backspace"),
+    KM_BIND1(KM_KEYMAP_ISEARCH, '\n', 0, "isearch-accept"),
+
+    KM_BIND1(KM_KEYMAP_CONFIRMATION, 'g', KM_MOD_CTRL, "keyboard-quit"),
+    KM_BIND1(KM_KEYMAP_CONFIRMATION, 'y', 0, "confirmation-yes"),
+    KM_BIND1(KM_KEYMAP_CONFIRMATION, 'Y', 0, "confirmation-yes"),
+    KM_BIND1(KM_KEYMAP_CONFIRMATION, 'n', 0, "confirmation-no"),
+    KM_BIND1(KM_KEYMAP_CONFIRMATION, 'N', 0, "confirmation-no"),
+};
+
+#undef KM_BIND1
+#undef KM_BIND2
+
 static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
                              const KmEvent *event, KmError *error)
 {
+    KmKeymapId context = active_keymap(loop);
+    KmKeymap *keymap;
     uint32_t codepoint;
     uint32_t modifiers;
     size_t node;
 
-    if (loop->search_active && event->kind != KM_EVENT_RESIZE &&
-        event->kind != KM_EVENT_FOCUS && event->kind != KM_EVENT_MOUSE &&
-        event->kind != KM_EVENT_EOF) {
-        return dispatch_search(loop, view, event, error);
-    }
-    if (loop->prompt_kind != KM_PROMPT_NONE &&
-        event->kind != KM_EVENT_RESIZE && event->kind != KM_EVENT_FOCUS &&
-        event->kind != KM_EVENT_MOUSE && event->kind != KM_EVENT_EOF) {
-        return dispatch_prompt(loop, view, event, error);
-    }
     if (event->kind == KM_EVENT_RESIZE || event->kind == KM_EVENT_FOCUS ||
         event->kind == KM_EVENT_MOUSE || event->kind == KM_EVENT_EOF) {
         return KM_OK;
     }
     if (event->kind == KM_EVENT_PASTE) {
+        if (context == KM_KEYMAP_MINIBUFFER) {
+            return dispatch_minibuffer_text(loop, event, error);
+        }
+        if (context != KM_KEYMAP_GLOBAL) {
+            return fail(error, KM_ERR_INVALID, "paste context");
+        }
         KmStatus status;
         bool has_argument = loop->prefix_kind != KM_PREFIX_NONE;
         reset_command_input(loop);
@@ -2508,6 +3083,15 @@ static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
     }
     if (event->kind == KM_EVENT_TEXT &&
         (event->text != NULL || event->text_len != 0)) {
+        if (context == KM_KEYMAP_MINIBUFFER) {
+            return dispatch_minibuffer_text(loop, event, error);
+        }
+        if (context == KM_KEYMAP_ISEARCH) {
+            return dispatch_isearch_text(loop, view, event, error);
+        }
+        if (context != KM_KEYMAP_GLOBAL) {
+            return fail(error, KM_ERR_INVALID, "text context");
+        }
         int64_t argument = current_argument(loop);
         KmStatus status;
         reset_command_input(loop);
@@ -2522,13 +3106,13 @@ static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
 
     codepoint = event->codepoint;
     modifiers = event->modifiers;
-    if (is_quit_key(codepoint, modifiers)) {
-        reset_command_input(loop);
-        view->buffer->mark_active = false;
-        loop->quit_requested = true;
-        return KM_OK;
-    }
     if (loop->key_node == 0) {
+        loop->keymap_id = context;
+    } else {
+        context = loop->keymap_id;
+    }
+    keymap = &loop->keymaps[context];
+    if (context == KM_KEYMAP_GLOBAL && loop->key_node == 0) {
         bool meta_digit = modifiers == KM_MOD_ALT &&
                           codepoint >= '0' && codepoint <= '9';
         bool plain_prefix_digit = loop->prefix_kind != KM_PREFIX_NONE &&
@@ -2546,84 +3130,40 @@ static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
         }
     }
 
-    node = find_key_child(loop->key_node, codepoint, modifiers);
+    node = find_key_child(keymap, loop->key_node, codepoint, modifiers);
     if (node == KM_NO_KEY_NODE) {
         if (event->kind == KM_EVENT_TEXT && loop->key_node == 0) {
-            return dispatch_text(loop, view, codepoint, error);
+            if (context == KM_KEYMAP_GLOBAL) {
+                return dispatch_text(loop, view, codepoint, error);
+            }
+            if (context == KM_KEYMAP_MINIBUFFER) {
+                return dispatch_minibuffer_text(loop, event, error);
+            }
+            if (context == KM_KEYMAP_ISEARCH) {
+                return dispatch_isearch_text(loop, view, event, error);
+            }
         }
         reset_command_input(loop);
         return fail(error, KM_ERR_INVALID, "undefined key");
     }
-    if (key_trie[node].child != KM_NO_KEY_NODE) {
+    if (keymap->nodes[node].child != KM_NO_KEY_NODE) {
         loop->key_node = node;
         return KM_OK;
     }
-    if (key_trie[node].command == KM_INTERNAL_UNIVERSAL_ARGUMENT) {
-        return universal_argument(loop, error);
-    }
-    if (key_trie[node].command == KM_INTERNAL_EXIT) {
+    if (keymap->nodes[node].command == KM_COMMAND_NONE) {
         reset_command_input(loop);
-        loop->request = KM_COMMAND_REQUEST_EXIT;
-        return KM_OK;
+        return fail(error, KM_ERR_INVALID, "undefined key");
     }
-    if (key_trie[node].command == KM_INTERNAL_SAVE) {
-        reset_command_input(loop);
-        loop->request = KM_COMMAND_REQUEST_SAVE;
-        return KM_OK;
-    }
-    if (key_trie[node].command == KM_INTERNAL_SEARCH) {
-        reset_command_input(loop);
-        loop->search_origin = km_anchor_get(view->point);
-        loop->search_len = 0;
-        loop->search_active = true;
-        loop->search_forward = codepoint == 's';
-        loop->search_failed = false;
-        loop->search_wrapped = false;
-        return KM_OK;
-    }
-    if (key_trie[node].command == KM_INTERNAL_FIND_FILE) {
-        KmStatus prompt_status = begin_prompt(loop, KM_PROMPT_FIND_FILE, error);
-        return prompt_status == KM_OK
-                   ? refresh_prompt_completions(loop, error)
-                   : prompt_status;
-    }
-    if (key_trie[node].command == KM_INTERNAL_SWITCH_BUFFER) {
-        KmStatus prompt_status =
-            begin_prompt(loop, KM_PROMPT_SWITCH_BUFFER, error);
-        return prompt_status == KM_OK
-                   ? refresh_prompt_completions(loop, error)
-                   : prompt_status;
-    }
-    if (key_trie[node].command == KM_INTERNAL_KILL_BUFFER) {
-        reset_command_input(loop);
-        if (km_buffer_is_modified(view->buffer)) {
-            return begin_prompt(loop, KM_PROMPT_CONFIRM_KILL, error);
-        }
-        loop->request = KM_COMMAND_REQUEST_KILL_BUFFER;
-        return KM_OK;
-    }
-    if (key_trie[node].command == KM_INTERNAL_EXTENDED_COMMAND) {
-        int64_t argument = current_argument(loop);
-        bool has_argument = loop->prefix_kind != KM_PREFIX_NONE;
-        bool page_opposite = loop->prefix_kind == KM_PREFIX_NUMERIC &&
-                             loop->prefix_negative &&
-                             !loop->prefix_has_digits;
-        KmStatus prompt_status = begin_prompt(loop, KM_PROMPT_COMMAND, error);
-        if (prompt_status == KM_OK) {
-            loop->prompt_argument = argument;
-            loop->prompt_has_argument = has_argument;
-            loop->prompt_page_opposite = page_opposite;
-            prompt_status = refresh_prompt_completions(loop, error);
-        }
-        return prompt_status;
-    }
-    return execute_registered_command(
-        loop, view, (KmCommandId)key_trie[node].command, error);
+    return execute_registered_command(loop, view,
+                                      keymap->nodes[node].command,
+                                      context, error);
 }
 
 KmStatus km_command_loop_create(KmCommandLoop **out_loop, KmError *error)
 {
     KmCommandLoop *loop;
+    size_t i;
+    KmStatus status;
 
     km_error_clear(error);
     if (out_loop == NULL) {
@@ -2634,19 +3174,59 @@ KmStatus km_command_loop_create(KmCommandLoop **out_loop, KmError *error)
     if (loop == NULL) {
         return fail(error, KM_ERR_OOM, "command loop create");
     }
+    for (i = 0; i < KM_KEYMAP_COUNT; ++i) {
+        status = reserve_keymap(&loop->keymaps[i], 1, error);
+        if (status != KM_OK) goto fail;
+        loop->keymaps[i].nodes[0] = (KmKeyNode){
+            0, 0, KM_COMMAND_NONE, KM_NO_KEY_NODE, KM_NO_KEY_NODE,
+        };
+        loop->keymaps[i].count = 1;
+    }
+    for (i = 0; i < sizeof(default_bindings) / sizeof(default_bindings[0]); ++i) {
+        const KmDefaultBinding *binding = &default_bindings[i];
+        const KmCommandSpec *command = find_command_name(binding->command_name);
+        status = bind_key(loop, binding->keymap, binding->sequence,
+                          binding->count, command, error);
+        if (status != KM_OK) goto fail;
+    }
     *out_loop = loop;
     return KM_OK;
+
+fail:
+    km_command_loop_destroy(loop);
+    return status;
 }
 
 void km_command_loop_destroy(KmCommandLoop *loop)
 {
     if (loop != NULL) {
+        size_t i;
         clear_completions(loop);
         free(loop->prompt_text);
         free(loop->search_query);
         free(loop->kill);
+        for (i = 0; i < KM_KEYMAP_COUNT; ++i) {
+            free(loop->keymaps[i].nodes);
+        }
     }
     free(loop);
+}
+
+KmStatus km_command_loop_bind_key(KmCommandLoop *loop, KmKeymapId keymap,
+                                  const KmKeyStroke *sequence, size_t count,
+                                  const char *command_name, KmError *error)
+{
+    const KmCommandSpec *command;
+
+    km_error_clear(error);
+    if (loop == NULL) {
+        return fail(error, KM_ERR_INVALID, "keymap binding");
+    }
+    if (loop->key_node != 0) {
+        return fail(error, KM_ERR_CONFLICT, "keymap binding");
+    }
+    command = find_command_name(command_name);
+    return bind_key(loop, keymap, sequence, count, command, error);
 }
 
 KmStatus km_command_loop_dispatch(KmCommandLoop *loop, KmView *view,

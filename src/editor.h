@@ -12,6 +12,19 @@ typedef struct KmCommandLoop KmCommandLoop;
 typedef struct KmFile KmFile;
 
 typedef enum {
+    KM_KEYMAP_GLOBAL = 0,
+    KM_KEYMAP_MINIBUFFER,
+    KM_KEYMAP_ISEARCH,
+    KM_KEYMAP_CONFIRMATION,
+    KM_KEYMAP_COUNT
+} KmKeymapId;
+
+typedef struct {
+    uint32_t codepoint;
+    uint32_t modifiers;
+} KmKeyStroke;
+
+typedef enum {
     KM_COMMAND_REQUEST_NONE = 0,
     KM_COMMAND_REQUEST_SAVE,
     KM_COMMAND_REQUEST_SAVE_ALL_EXIT,
@@ -32,6 +45,8 @@ typedef enum {
     KM_COMMAND_PASTE,
     KM_COMMAND_FORWARD_CHAR,
     KM_COMMAND_BACKWARD_CHAR,
+    KM_COMMAND_FORWARD_WORD,
+    KM_COMMAND_BACKWARD_WORD,
     KM_COMMAND_DELETE_CHAR,
     KM_COMMAND_DELETE_BACKWARD_CHAR,
     KM_COMMAND_BEGINNING_OF_LINE,
@@ -91,6 +106,8 @@ KmStatus km_view_insert_utf8_block(KmView *view, const uint8_t *text,
                                    size_t len, KmError *error);
 KmStatus km_view_forward_char(KmView *view, KmError *error);
 KmStatus km_view_backward_char(KmView *view, KmError *error);
+KmStatus km_view_forward_word(KmView *view, KmError *error);
+KmStatus km_view_backward_word(KmView *view, KmError *error);
 KmStatus km_view_delete_char(KmView *view, KmError *error);
 KmStatus km_view_delete_backward_char(KmView *view, KmError *error);
 KmStatus km_view_beginning_of_line(KmView *view, KmError *error);
@@ -104,6 +121,10 @@ KmStatus km_command_loop_create(KmCommandLoop **out_loop, KmError *error);
 void km_command_loop_destroy(KmCommandLoop *loop);
 KmStatus km_command_loop_dispatch(KmCommandLoop *loop, KmView *view,
                                   const KmEvent *event, KmError *error);
+/* Rebinding is rejected when the command is not valid in the target keymap. */
+KmStatus km_command_loop_bind_key(KmCommandLoop *loop, KmKeymapId keymap,
+                                  const KmKeyStroke *sequence, size_t count,
+                                  const char *command_name, KmError *error);
 KmCommandId km_command_loop_last_command(const KmCommandLoop *loop);
 bool km_command_loop_quit_requested(const KmCommandLoop *loop);
 void km_command_loop_clear_quit(KmCommandLoop *loop);
