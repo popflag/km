@@ -49,7 +49,8 @@
   undo/redo 和大小写敏感的
   UTF-8 增量搜索。`C-s`/`C-r` 切换前后方向并重复查找，越过 accessible
   range 边界时环绕；提示行区分 forward、backward、wrapped 和 failing。
-  `DEL` 回退一个 Unicode code point，`RET` 接受，`C-g` 取消并恢复搜索起点。
+  活动搜索绑定启动时的 Buffer 和 Document revision；`DEL` 回退一个 Unicode
+  code point，`RET` 接受，`C-g` 取消并恢复搜索起点。
 - `C-x C-f` 通过 UTF-8 minibuffer 打开或创建文件；`C-x b` 按完整显示名
   切换 Buffer，空输入循环到下一个；`C-x k` 关闭当前 Buffer。关闭最后一个
   Buffer 会立即创建新的 `*scratch*`。
@@ -928,12 +929,12 @@ NUL 是合法 Unicode scalar U+0000 的 UTF-8 表示。内部 API 必须始终�
 4. 写 BOM、按目标 EOL policy 编码后的完整内容，循环处理 short write。
 5. 保留可支持的基础 mode/attributes；ACL、xattr、owner 的完整策略单独测试。
 6. POSIX `fsync(temp)`；Windows `FlushFileBuffers(temp)`。
-7. 关闭临时文件。
-8. POSIX `rename(temp,target)`；Windows 对已存在目标使用 `ReplaceFileW`，新目标使用同卷 move。
+7. POSIX 保持临时文件 descriptor 打开，以便提交后从同一对象刷新 identity；Windows 在替换前关闭写 handle，使 last-write time 稳定。
+8. POSIX `rename(temp,target)`；Windows 对已存在目标使用 `ReplaceFileW`，新目标使用同卷 move。Windows 只读目标在替换前临时清除 `READONLY`，替换失败时恢复，成功后在新目标上恢复可设置的基础 attributes。
 9. POSIX 尽力打开并 `fsync` parent directory。
-10. 更新 file identity；只有仍处于刚保存的 history state 才更新 `saved_state_id`。
+10. 更新 file identity；只有 pathname 提交已经成功且仍处于刚保存的 history state 才更新 `saved_state_id`。提交后的 metadata/identity 刷新错误必须作为告警返回，但不能把已落盘内容误报为未保存；后续保存用提交 witness 对 identity 做一次协调。
 
-任何失败保持 Document dirty，原目标文件不得先删除。跨文件系统替换失败不能降级为“删目标再 copy”。临时文件是否保留取决于失败阶段，但必须在消息中报告其路径。
+任何提交前失败保持 Document dirty，原目标文件不得先删除。跨文件系统替换失败不能降级为“删目标再 copy”。未提交的临时文件在返回前尽力删除，不把内部临时路径暴露为恢复接口。
 
 V1 对 symbolic link、Windows reparse point 和多 hard-link 目标采用保守策略：检测后拒绝安全替换并要求用户显式选择未来提供的跟随/原地写策略。直接 rename 会替换 symlink 本身并可能打断 hard-link 关系，不能静默执行。
 
@@ -972,7 +973,7 @@ typedef struct {
 - `realloc` 使用临时指针。
 - 库层不 `exit()`，由 app 层显示错误并决定是否继续。
 - 修改 Document 前完成所有可能失败的分配。
-- 保存失败绝不清除 dirty。
+- 提交前保存失败绝不清除 dirty；提交后刷新告警按已提交 history state 处理。
 - Renderer OOM 时保留旧 front，恢复终端后可受控退出。
 - 第三方 `utf8proc` 的 allocation 使用其配套 free API。
 
@@ -989,7 +990,14 @@ src/
   base.c/.h
   document.c/.h       gap, anchors, transaction, undo
   unicode.c/.h        utf8proc adapter, codepoint/EGC/width
-  editor.c/.h         Buffer, View, command loop, keymap
+  editor.h            opaque Buffer, View, command-loop API
+  editor_internal.h   private Buffer/View command bridge
+  editor_buffer.c     Buffer, View, movement, transactions
+  editor_command.c    command loop, keymap, prompt, search
+  file.h              narrow file contract
+  file_text.c/.h      shared UTF-8/BOM/EOL file codec
+  file_posix.c
+  file_win32.c
   layout.c/.h         visible-line layout, rectangle projection
   render.c/.h         CellGrid and VT output generation
   input_vt.c/.h       POSIX/pipe byte-stream parser
@@ -1001,13 +1009,16 @@ third_party/
   utf8proc/
 tests/
   test_document.c
-  test_unicode.c
-  test_commands.c
+  test_editor.c
+  test_transcript.c
   test_layout.c
+  test_render.c
+  test_grapheme.c
   test_input_vt.c
-  test_save.c
-  fuzz_input_vt.c
-  fuzz_document.c
+  test_file.c
+  test_platform.c
+  test_platform_pty.c
+  bench_layout.c
 ```
 
 这只是起始布局。某个文件明显变大后再拆分，不提前为每个 struct 创建目录和 target。

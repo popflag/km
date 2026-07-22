@@ -10,6 +10,9 @@ typedef struct {
     size_t count;
     char *common;
 } KmPathCompletions;
+typedef struct {
+    bool committed;
+} KmFileSaveResult;
 
 KmStatus km_path_from_command_line(int argc, char **argv, KmPath **out_path,
                                    KmError *error);
@@ -31,6 +34,10 @@ const char *km_file_display_name(const KmFile *file);
 /* Existing targets compare file identity; missing targets compare path spelling. */
 bool km_file_same_target(const KmFile *left, const KmFile *right);
 KmStatus km_file_save(KmFile *file, const KmDocument *document,
-                      KmError *error);
+                      KmFileSaveResult *result, KmError *error);
+
+#ifdef KM_FILE_TESTING
+void km_file_test_fail_post_commit_refresh_once(void);
+#endif
 
 #endif

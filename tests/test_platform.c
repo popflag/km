@@ -187,10 +187,9 @@ int main(void)
     static const unsigned char input[] = {
         0x07, 0x1f, '\t', 0xC2, 'A', '\r', 0x7f, 0x00,
         0x1b, '[', 'A', 0x1b, '[', '3', '~', 0x1b, '3',
-#ifndef _WIN32
         0x1b, '[', '2', '0', '0', '~', 'p', 0, 'q',
         0x1b, '[', '2', '0', '1', '~',
-#endif
+        0x1b, ']', 't', 'i', 't', 'l', 'e', 0x07, 'O',
         0x1b, '[',
         '1', '1', '1', '1', '1', '1', '1', '1', '1', '1',
         '1', '1', '1', '1', '1', '1', '1', '1', '1', '1', 'z', 'X',
@@ -280,17 +279,18 @@ int main(void)
         km_platform_close(platform);
         return fail("Meta key was not normalized");
     }
-#ifndef _WIN32
     if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
         event.kind != KM_EVENT_PASTE || event.text_len != 3 ||
         memcmp(event.text, "p\0q", 3) != 0) {
         km_platform_close(platform);
         return fail("bracketed paste was not normalized as one event");
     }
-#endif
     if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
-        event.kind != KM_EVENT_KEY || event.codepoint != KM_KEY_ESCAPE ||
-        km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_TEXT || event.codepoint != 'O') {
+        km_platform_close(platform);
+        return fail("OSC payload leaked into text events");
+    }
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
         event.kind != KM_EVENT_KEY || event.codepoint != KM_KEY_ESCAPE ||
         km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
         event.kind != KM_EVENT_TEXT || event.codepoint != 'X') {

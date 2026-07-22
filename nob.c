@@ -71,8 +71,11 @@ static const char *toolchain_id(void)
 static const char *const km_sources[] = {
     "src/base.c",
     "src/document.c",
-    "src/editor.c",
+    "src/editor_buffer.c",
+    "src/editor_command.c",
+    "src/file_text.c",
     KM_FILE_SOURCE,
+    "src/input_vt.c",
     "src/layout.c",
     "src/render.c",
     "src/unicode.c",
@@ -386,8 +389,11 @@ static bool build_executable(const char *name, const char *entry,
     inputs[input_count++] = "src/commands.def";
     inputs[input_count++] = "src/document.h";
     inputs[input_count++] = "src/editor.h";
+    inputs[input_count++] = "src/editor_internal.h";
     inputs[input_count++] = "src/event.h";
     inputs[input_count++] = "src/file.h";
+    inputs[input_count++] = "src/file_text.h";
+    inputs[input_count++] = "src/input_vt.h";
     inputs[input_count++] = "src/layout.h";
     inputs[input_count++] = "src/platform.h";
     inputs[input_count++] = "src/render.h";
@@ -405,6 +411,13 @@ static bool build_executable(const char *name, const char *entry,
 
     append_compiler(&cmd);
     append_common_flags(&cmd, true);
+    if (strcmp(name, "test_file") == 0) {
+#if defined(_MSC_VER)
+        nob_cmd_append(&cmd, "/DKM_FILE_TESTING");
+#else
+        nob_cmd_append(&cmd, "-DKM_FILE_TESTING");
+#endif
+    }
     nob_cmd_append(&cmd, entry);
     for (size_t i = 0; i < source_count; ++i) nob_cmd_append(&cmd, sources[i]);
     if (with_platform) nob_cmd_append(&cmd, KM_PLATFORM_SOURCE);
@@ -434,7 +447,8 @@ static bool build_test_document(void)
 static bool build_test_editor(void)
 {
     const char *sources[] = {
-        "src/base.c", "src/document.c", "src/editor.c", "src/unicode.c",
+        "src/base.c", "src/document.c", "src/editor_buffer.c",
+        "src/editor_command.c", "src/unicode.c", "src/file_text.c",
         KM_FILE_SOURCE,
     };
     return build_executable("test_editor", "tests/test_editor.c",
@@ -444,7 +458,8 @@ static bool build_test_editor(void)
 static bool build_test_transcript(void)
 {
     const char *sources[] = {
-        "src/base.c", "src/document.c", "src/editor.c", "src/unicode.c",
+        "src/base.c", "src/document.c", "src/editor_buffer.c",
+        "src/editor_command.c", "src/unicode.c", "src/file_text.c",
         KM_FILE_SOURCE,
     };
     return build_executable("test_transcript", "tests/test_transcript.c",
@@ -454,8 +469,9 @@ static bool build_test_transcript(void)
 static bool build_test_layout(void)
 {
     const char *sources[] = {
-        "src/base.c", "src/document.c", "src/editor.c",
-        "src/layout.c", "src/render.c", "src/unicode.c", KM_FILE_SOURCE,
+        "src/base.c", "src/document.c", "src/editor_buffer.c",
+        "src/editor_command.c", "src/file_text.c", "src/layout.c",
+        "src/render.c", "src/unicode.c", KM_FILE_SOURCE,
     };
     return build_executable("test_layout", "tests/test_layout.c",
                             sources, NOB_ARRAY_LEN(sources), false);
@@ -463,9 +479,18 @@ static bool build_test_layout(void)
 
 static bool build_test_platform(void)
 {
-    const char *sources[] = {"src/base.c", "src/render.c"};
+    const char *sources[] = {
+        "src/base.c", "src/input_vt.c", "src/render.c",
+    };
     return build_executable("test_platform", "tests/test_platform.c",
                             sources, NOB_ARRAY_LEN(sources), true);
+}
+
+static bool build_test_input_vt(void)
+{
+    const char *sources[] = {"src/base.c", "src/input_vt.c"};
+    return build_executable("test_input_vt", "tests/test_input_vt.c",
+                            sources, NOB_ARRAY_LEN(sources), false);
 }
 
 static bool build_test_render(void)
@@ -475,13 +500,32 @@ static bool build_test_render(void)
                             sources, NOB_ARRAY_LEN(sources), false);
 }
 
+static bool build_test_grapheme(void)
+{
+    const char *sources[] = {"src/base.c", "src/unicode.c"};
+    return build_executable("test_grapheme", "tests/test_grapheme.c",
+                            sources, NOB_ARRAY_LEN(sources), false);
+}
+
 static bool build_test_file(void)
 {
     const char *sources[] = {
-        "src/base.c", "src/document.c", "src/editor.c", "src/unicode.c",
+        "src/base.c", "src/document.c", "src/editor_buffer.c",
+        "src/editor_command.c", "src/unicode.c", "src/file_text.c",
         KM_FILE_SOURCE,
     };
     return build_executable("test_file", "tests/test_file.c",
+                            sources, NOB_ARRAY_LEN(sources), false);
+}
+
+static bool build_bench_layout(void)
+{
+    const char *sources[] = {
+        "src/base.c", "src/document.c", "src/editor_buffer.c",
+        "src/editor_command.c", "src/file_text.c", "src/layout.c",
+        "src/render.c", "src/unicode.c", KM_FILE_SOURCE,
+    };
+    return build_executable("bench_layout", "tests/bench_layout.c",
                             sources, NOB_ARRAY_LEN(sources), false);
 }
 
@@ -506,7 +550,9 @@ static bool test(void)
         !build_test_transcript() ||
         !build_test_layout() ||
         !build_test_render() ||
+        !build_test_grapheme() ||
         !build_test_file() ||
+        !build_test_input_vt() ||
         !build_test_platform()
 #ifndef _WIN32
         || !build_test_platform_pty()
@@ -518,7 +564,9 @@ static bool test(void)
         !run_test("test_transcript") ||
         !run_test("test_layout") ||
         !run_test("test_render") ||
+        !run_test("test_grapheme") ||
         !run_test("test_file") ||
+        !run_test("test_input_vt") ||
         !run_test("test_platform")) return false;
 #ifndef _WIN32
     if (!run_test("test_platform_pty")) return false;
@@ -533,7 +581,8 @@ static bool test(void)
 
 static void usage(const char *program)
 {
-    nob_log(NOB_INFO, "usage: %s [build|test|sanitize|clean]", program);
+    nob_log(NOB_INFO,
+            "usage: %s [build|test|sanitize|bench-layout|clean]", program);
 }
 
 int main(int argc, char **argv)
@@ -548,6 +597,7 @@ int main(int argc, char **argv)
     }
     if (strcmp(target, "clean") == 0) return clean() ? 0 : 1;
     if (strcmp(target, "build") != 0 && strcmp(target, "test") != 0 &&
+        strcmp(target, "bench-layout") != 0 &&
         strcmp(target, "sanitize") != 0) {
         usage(program);
         return 1;
@@ -565,5 +615,8 @@ int main(int argc, char **argv)
         !ensure_toolchain_marker() || !build_utf8proc()) return 1;
     if (strcmp(target, "test") == 0 || strcmp(target, "sanitize") == 0)
         return test() ? 0 : 1;
+    if (strcmp(target, "bench-layout") == 0) {
+        return build_bench_layout() && run_test("bench_layout") ? 0 : 1;
+    }
     return build_km() ? 0 : 1;
 }

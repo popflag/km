@@ -1,4 +1,5 @@
 #include "file.h"
+#include "file_text.h"
 
 #include "utf8proc.h"
 
@@ -12,12 +13,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-typedef enum {
-    KM_EOL_LF,
-    KM_EOL_CRLF,
-    KM_EOL_CR
-} KmEolStyle;
 
 typedef struct {
     dev_t device;
@@ -39,10 +34,19 @@ struct KmFile {
     KmPath *path;
     KmFileIdentity identity;
     mode_t mode;
-    KmEolStyle eol;
-    bool bom;
+    KmFileTextFormat format;
     bool exists;
+    bool identity_pending;
 };
+
+#ifdef KM_FILE_TESTING
+static bool test_fail_post_commit_refresh;
+
+void km_file_test_fail_post_commit_refresh_once(void)
+{
+    test_fail_post_commit_refresh = true;
+}
+#endif
 
 static KmStatus fail(KmError *error, KmStatus status, const char *operation,
                      int os_code)
@@ -64,6 +68,28 @@ static bool same_identity(const KmFileIdentity *left,
            left->change_nanoseconds == right->change_nanoseconds &&
            left->modify_nanoseconds == right->modify_nanoseconds &&
            left->size == right->size && left->links == right->links;
+}
+
+static bool same_commit_witness(const KmFileIdentity *current,
+                                const KmFileIdentity *witness)
+{
+    return current->device == witness->device &&
+           current->inode == witness->inode &&
+           current->modify_time == witness->modify_time &&
+           current->modify_nanoseconds == witness->modify_nanoseconds &&
+           current->size == witness->size &&
+           current->links == witness->links;
+}
+
+static bool fail_post_commit_refresh(void)
+{
+#ifdef KM_FILE_TESTING
+    if (test_fail_post_commit_refresh) {
+        test_fail_post_commit_refresh = false;
+        return true;
+    }
+#endif
+    return false;
 }
 
 static KmFileIdentity identity_from_stat(const struct stat *info)
@@ -484,73 +510,6 @@ static KmStatus read_all(int descriptor, size_t expected, uint8_t **out,
     return KM_OK;
 }
 
-static bool valid_utf8(const uint8_t *bytes, size_t len)
-{
-    size_t offset = 0;
-
-    while (offset < len) {
-        utf8proc_int32_t codepoint;
-        utf8proc_ssize_t count = utf8proc_iterate(
-            bytes + offset, (utf8proc_ssize_t)(len - offset), &codepoint);
-        if (count <= 0) return false;
-        offset += (size_t)count;
-    }
-    return true;
-}
-
-static KmStatus normalize_text(const uint8_t *bytes, size_t len,
-                               KmFile *file, uint8_t **out_text,
-                               size_t *out_len, KmError *error)
-{
-    size_t offset = 0;
-    size_t output = 0;
-    size_t lf = 0;
-    size_t crlf = 0;
-    size_t cr = 0;
-    const uint8_t *body;
-    uint8_t *text;
-
-    file->bom = len >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb &&
-                bytes[2] == 0xbf;
-    if (file->bom) offset = 3;
-    body = len == offset ? NULL : bytes + offset;
-    if (!valid_utf8(body, len - offset)) {
-        return fail(error, KM_ERR_INVALID, "file UTF-8", 0);
-    }
-    for (size_t i = offset; i < len; ++i) {
-        if (bytes[i] == '\r') {
-            if (i + 1 < len && bytes[i + 1] == '\n') {
-                ++crlf;
-                ++i;
-            } else {
-                ++cr;
-            }
-        } else if (bytes[i] == '\n') {
-            ++lf;
-        }
-    }
-    if ((lf != 0) + (crlf != 0) + (cr != 0) > 1) {
-        return fail(error, KM_ERR_INVALID, "mixed file line endings", 0);
-    }
-    file->eol = crlf != 0 ? KM_EOL_CRLF : (cr != 0 ? KM_EOL_CR : KM_EOL_LF);
-    text = len == offset ? NULL : (uint8_t *)malloc(len - offset);
-    if (len != offset && text == NULL) {
-        return fail(error, KM_ERR_OOM, "normalize file", 0);
-    }
-    while (offset < len) {
-        if (bytes[offset] == '\r') {
-            text[output++] = '\n';
-            if (offset + 1 < len && bytes[offset + 1] == '\n') ++offset;
-        } else {
-            text[output++] = bytes[offset];
-        }
-        ++offset;
-    }
-    *out_text = text;
-    *out_len = output;
-    return KM_OK;
-}
-
 KmStatus km_file_load(KmPath *path, KmFile **out_file, uint8_t **out_text,
                       size_t *out_len, KmError *error)
 {
@@ -579,7 +538,7 @@ KmStatus km_file_load(KmPath *path, KmFile **out_file, uint8_t **out_text,
         return fail(error, KM_ERR_OOM, "load file", 0);
     }
     file->path = path;
-    file->eol = KM_EOL_LF;
+    file->format.eol = KM_EOL_LF;
     if (lstat(path->bytes, &before) != 0) {
         if (errno != ENOENT) {
             status = fail(error, KM_ERR_IO, "inspect file", errno);
@@ -634,7 +593,8 @@ KmStatus km_file_load(KmPath *path, KmFile **out_file, uint8_t **out_text,
     file->identity = identity_from_stat(&before);
     file->mode = before.st_mode & 0777;
     file->exists = true;
-    status = normalize_text(bytes, len, file, out_text, out_len, error);
+    status = km_file_text_decode(bytes, len, &file->format,
+                                 out_text, out_len, error);
     if (status != KM_OK) goto fail;
     free(bytes);
     *out_file = file;
@@ -691,42 +651,10 @@ static KmStatus write_all(int descriptor, const uint8_t *bytes, size_t len,
     return KM_OK;
 }
 
-static KmStatus write_document(int descriptor, const KmFile *file,
-                               const KmDocument *document, KmError *error)
+static KmStatus write_file_text(void *context, const uint8_t *bytes,
+                                size_t len, KmError *error)
 {
-    static const uint8_t bom[] = {0xef, 0xbb, 0xbf};
-    uint8_t input[4096];
-    uint8_t output[8192];
-    KmTextIter iterator;
-    bool eof = false;
-    KmStatus status;
-
-    if (file->bom) {
-        status = write_all(descriptor, bom, sizeof(bom), error);
-        if (status != KM_OK) return status;
-    }
-    status = km_document_iter_init(document, (KmBytePos){0}, &iterator, error);
-    if (status != KM_OK) return status;
-    while (!eof) {
-        size_t count;
-        size_t output_len = 0;
-        status = km_text_iter_read(&iterator, input, sizeof(input), &count,
-                                   &eof, error);
-        if (status != KM_OK) return status;
-        for (size_t i = 0; i < count; ++i) {
-            if (input[i] == '\n' && file->eol == KM_EOL_CRLF) {
-                output[output_len++] = '\r';
-                output[output_len++] = '\n';
-            } else if (input[i] == '\n' && file->eol == KM_EOL_CR) {
-                output[output_len++] = '\r';
-            } else {
-                output[output_len++] = input[i];
-            }
-        }
-        status = write_all(descriptor, output, output_len, error);
-        if (status != KM_OK) return status;
-    }
-    return KM_OK;
+    return write_all(*(const int *)context, bytes, len, error);
 }
 
 static char *temporary_template(const char *path)
@@ -770,22 +698,38 @@ static void sync_parent_directory(const char *path)
 }
 
 KmStatus km_file_save(KmFile *file, const KmDocument *document,
-                      KmError *error)
+                      KmFileSaveResult *result, KmError *error)
 {
     struct stat info;
+    struct stat saved_info;
+    KmFileIdentity witness;
+    mode_t witness_mode;
     char *temporary;
     int descriptor = -1;
-    bool renamed = false;
+    bool committed = false;
+    bool was_existing;
     KmStatus status;
 
     km_error_clear(error);
-    if (file == NULL || document == NULL) {
+    if (result != NULL) *result = (KmFileSaveResult){0};
+    if (file == NULL || document == NULL || result == NULL) {
         return fail(error, KM_ERR_INVALID, "save file", 0);
     }
     if (lstat(file->path->bytes, &info) == 0) {
         KmFileIdentity current = identity_from_stat(&info);
-        if (!file->exists || !valid_target(&info) ||
-            !same_identity(&current, &file->identity)) {
+        if (file->identity_pending) {
+            if (!valid_target(&info) ||
+                !same_commit_witness(&current, &file->identity) ||
+                (info.st_mode & 0777) != file->mode) {
+                return fail(error, KM_ERR_CONFLICT,
+                            "file changed after committed save", 0);
+            }
+            file->identity = current;
+            file->mode = info.st_mode & 0777;
+            file->exists = true;
+            file->identity_pending = false;
+        } else if (!file->exists || !valid_target(&info) ||
+                   !same_identity(&current, &file->identity)) {
             return fail(error, KM_ERR_CONFLICT, "file changed on disk", 0);
         }
     } else if (errno != ENOENT) {
@@ -805,19 +749,22 @@ KmStatus km_file_save(KmFile *file, const KmDocument *document,
         status = fail(error, KM_ERR_IO, "set temporary file mode", errno);
         goto done;
     }
-    status = write_document(descriptor, file, document, error);
+    status = km_file_text_write_document(&file->format, document, &descriptor,
+                                         write_file_text, error);
     if (status != KM_OK) goto done;
     if (fsync(descriptor) != 0) {
         status = fail(error, KM_ERR_IO, "flush temporary file", errno);
         goto done;
     }
-    if (close(descriptor) != 0) {
-        descriptor = -1;
-        status = fail(error, KM_ERR_IO, "close temporary file", errno);
+    if (fstat(descriptor, &saved_info) != 0 || !valid_target(&saved_info)) {
+        status = fail(error, KM_ERR_IO, "inspect temporary file",
+                      errno);
         goto done;
     }
-    descriptor = -1;
-    if (file->exists) {
+    witness = identity_from_stat(&saved_info);
+    witness_mode = saved_info.st_mode & 0777;
+    was_existing = file->exists;
+    if (was_existing) {
         if (rename(temporary, file->path->bytes) != 0) {
             status = fail(error, KM_ERR_IO, "replace file", errno);
             goto done;
@@ -827,21 +774,47 @@ KmStatus km_file_save(KmFile *file, const KmDocument *document,
                       "create file", errno);
         goto done;
     }
-    renamed = true;
-    if (!file->exists) (void)unlink(temporary);
-    sync_parent_directory(file->path->bytes);
-    if (lstat(file->path->bytes, &info) != 0 || !valid_target(&info)) {
-        status = fail(error, KM_ERR_IO, "inspect saved file", errno);
-        goto done;
-    }
-    file->identity = identity_from_stat(&info);
-    file->mode = info.st_mode & 0777;
+    committed = true;
+    result->committed = true;
+    file->identity = witness;
+    file->mode = witness_mode;
     file->exists = true;
-    status = KM_OK;
+    file->identity_pending = true;
+    if (!was_existing && unlink(temporary) != 0) {
+        status = fail(error, KM_ERR_IO,
+                      "saved content committed; remove temporary link",
+                      errno);
+    }
+    sync_parent_directory(file->path->bytes);
+    if (fail_post_commit_refresh()) {
+        if (status == KM_OK) {
+            status = fail(error, KM_ERR_IO,
+                          "saved content committed; inspect file", EIO);
+        }
+    } else if (fstat(descriptor, &saved_info) != 0 ||
+               !valid_target(&saved_info)) {
+        if (status == KM_OK) {
+            status = fail(error, KM_ERR_IO,
+                          "saved content committed; inspect file", errno);
+        }
+    } else {
+        file->identity = identity_from_stat(&saved_info);
+        file->mode = saved_info.st_mode & 0777;
+        file->identity_pending = false;
+    }
+    if (close(descriptor) != 0) {
+        descriptor = -1;
+        if (status == KM_OK) {
+            status = fail(error, KM_ERR_IO,
+                          "saved content committed; close file", errno);
+        }
+    } else {
+        descriptor = -1;
+    }
 
 done:
     if (descriptor >= 0) (void)close(descriptor);
-    if (!renamed) (void)unlink(temporary);
+    if (!committed) (void)unlink(temporary);
     free(temporary);
     return status;
 }

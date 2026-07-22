@@ -25,6 +25,7 @@ int main(void)
 {
     char directory[MAX_PATH];
     char path[MAX_PATH];
+    char replacement[MAX_PATH];
     char hard_link[MAX_PATH];
     char alias_path[MAX_PATH];
     char missing_lower[MAX_PATH];
@@ -59,6 +60,7 @@ int main(void)
     CHECK(stream != NULL);
     CHECK(fwrite("a\r\n", 1, 3, stream) == 3);
     CHECK(fclose(stream) == 0);
+    CHECK(SetFileAttributesA(path, FILE_ATTRIBUTE_READONLY));
     CHECK(snprintf(completion_prefix, sizeof(completion_prefix), "%s\\fi",
                    temporary) > 0);
     CHECK(km_path_complete_utf8(completion_prefix, &completion, &error) ==
@@ -116,11 +118,63 @@ int main(void)
           KM_OK);
     CHECK(km_buffer_save(buffer, &error) == KM_OK);
     CHECK(!km_buffer_is_modified(buffer));
+    CHECK((GetFileAttributesA(path) & FILE_ATTRIBUTE_READONLY) != 0);
     stream = fopen(path, "rb");
     CHECK(stream != NULL);
     CHECK(fread(actual, 1, sizeof(actual), stream) == 4);
     CHECK(fclose(stream) == 0);
     CHECK(memcmp(actual, "a\r\nb", 4) == 0);
+    CHECK(km_view_insert_utf8_block(view, (const uint8_t *)"c", 1, &error) ==
+          KM_OK);
+    km_file_test_fail_post_commit_refresh_once();
+    CHECK(km_buffer_save(buffer, &error) == KM_ERR_IO);
+    CHECK(error.operation != NULL && strstr(error.operation, "committed"));
+    CHECK(!km_buffer_is_modified(buffer));
+    stream = fopen(path, "rb");
+    CHECK(stream != NULL);
+    CHECK(fread(actual, 1, sizeof(actual), stream) == 5);
+    CHECK(fclose(stream) == 0);
+    CHECK(memcmp(actual, "a\r\nbc", 5) == 0);
+    CHECK(km_view_insert_utf8_block(view, (const uint8_t *)"d", 1, &error) ==
+          KM_OK);
+    CHECK(km_buffer_save(buffer, &error) == KM_OK);
+    CHECK(!km_buffer_is_modified(buffer));
+    CHECK((GetFileAttributesA(path) & FILE_ATTRIBUTE_READONLY) != 0);
+    CHECK(km_view_insert_utf8_block(view, (const uint8_t *)"e", 1, &error) ==
+          KM_OK);
+    km_file_test_fail_post_commit_refresh_once();
+    CHECK(km_buffer_save(buffer, &error) == KM_ERR_IO);
+    CHECK(!km_buffer_is_modified(buffer));
+    CHECK(SetFileAttributesA(path, FILE_ATTRIBUTE_NORMAL));
+    CHECK(km_view_insert_utf8_block(view, (const uint8_t *)"f", 1, &error) ==
+          KM_OK);
+    CHECK(km_buffer_save(buffer, &error) == KM_ERR_CONFLICT);
+    CHECK(km_buffer_is_modified(buffer));
+    CHECK(SetFileAttributesA(path, FILE_ATTRIBUTE_READONLY));
+    CHECK(km_buffer_save(buffer, &error) == KM_OK);
+    CHECK(!km_buffer_is_modified(buffer));
+    CHECK(km_view_insert_utf8_block(view, (const uint8_t *)"g", 1, &error) ==
+          KM_OK);
+    km_file_test_fail_post_commit_refresh_once();
+    CHECK(km_buffer_save(buffer, &error) == KM_ERR_IO);
+    CHECK(!km_buffer_is_modified(buffer));
+    CHECK(SetFileAttributesA(path, FILE_ATTRIBUTE_NORMAL));
+    CHECK(snprintf(replacement, sizeof(replacement), "%s\\replacement.txt",
+                   temporary) > 0);
+    stream = fopen(replacement, "wb");
+    CHECK(stream != NULL);
+    CHECK(fwrite("external", 1, 8, stream) == 8);
+    CHECK(fclose(stream) == 0);
+    CHECK(MoveFileExA(replacement, path, MOVEFILE_REPLACE_EXISTING));
+    CHECK(km_view_insert_utf8_block(view, (const uint8_t *)"h", 1, &error) ==
+          KM_OK);
+    CHECK(km_buffer_save(buffer, &error) == KM_ERR_CONFLICT);
+    CHECK(km_buffer_is_modified(buffer));
+    stream = fopen(path, "rb");
+    CHECK(stream != NULL);
+    CHECK(fread(actual, 1, sizeof(actual), stream) == 8);
+    CHECK(fclose(stream) == 0);
+    CHECK(memcmp(actual, "external", 8) == 0);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
     CHECK(snprintf(hard_link, sizeof(hard_link), "%s\\hard.txt", temporary) > 0);
@@ -234,6 +288,7 @@ int main(void)
     char other[512];
     char bad[512];
     char mixed[512];
+    char post_path[512];
     char link_path[512];
     char cr_path[512];
     char alias_path[512];
@@ -340,6 +395,7 @@ int main(void)
     path_join(other, sizeof(other), directory, "replacement.txt");
     path_join(bad, sizeof(bad), directory, "invalid.txt");
     path_join(mixed, sizeof(mixed), directory, "mixed.txt");
+    path_join(post_path, sizeof(post_path), directory, "post-commit.txt");
     path_join(link_path, sizeof(link_path), directory, "link.txt");
     path_join(cr_path, sizeof(cr_path), directory, "cr.txt");
     CHECK(snprintf(alias_path, sizeof(alias_path), "%s/./visited.txt",
@@ -376,6 +432,41 @@ int main(void)
     CHECK(km_buffer_save(buffer, &error) == KM_ERR_CONFLICT);
     CHECK(km_buffer_is_modified(buffer));
     CHECK(read_bytes(path, disk, sizeof(disk)) == 8);
+    CHECK(memcmp(disk, "external", 8) == 0);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    write_bytes(post_path, (const uint8_t *)"old", 3);
+    buffer = load_buffer(post_path, &error);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){3}, &error) == KM_OK);
+    CHECK(km_view_insert_utf8_block(view, (const uint8_t *)"!", 1, &error) ==
+          KM_OK);
+    km_file_test_fail_post_commit_refresh_once();
+    CHECK(km_buffer_save(buffer, &error) == KM_ERR_IO);
+    CHECK(error.operation != NULL && strstr(error.operation, "committed"));
+    CHECK(!km_buffer_is_modified(buffer));
+    CHECK(read_bytes(post_path, disk, sizeof(disk)) == 4);
+    CHECK(memcmp(disk, "old!", 4) == 0);
+    CHECK(km_view_insert_utf8_block(view, (const uint8_t *)"?", 1, &error) ==
+          KM_OK);
+    CHECK(km_buffer_save(buffer, &error) == KM_OK);
+    CHECK(!km_buffer_is_modified(buffer));
+    CHECK(read_bytes(post_path, disk, sizeof(disk)) == 5);
+    CHECK(memcmp(disk, "old!?", 5) == 0);
+
+    CHECK(km_view_insert_utf8_block(view, (const uint8_t *)"#", 1, &error) ==
+          KM_OK);
+    km_file_test_fail_post_commit_refresh_once();
+    CHECK(km_buffer_save(buffer, &error) == KM_ERR_IO);
+    CHECK(!km_buffer_is_modified(buffer));
+    write_bytes(other, (const uint8_t *)"external", 8);
+    CHECK(rename(other, post_path) == 0);
+    CHECK(km_view_insert_utf8_block(view, (const uint8_t *)"$", 1, &error) ==
+          KM_OK);
+    CHECK(km_buffer_save(buffer, &error) == KM_ERR_CONFLICT);
+    CHECK(km_buffer_is_modified(buffer));
+    CHECK(read_bytes(post_path, disk, sizeof(disk)) == 8);
     CHECK(memcmp(disk, "external", 8) == 0);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
@@ -425,6 +516,7 @@ int main(void)
     CHECK(unlink(path) == 0);
     CHECK(unlink(bad) == 0);
     CHECK(unlink(mixed) == 0);
+    CHECK(unlink(post_path) == 0);
     CHECK(unlink(cr_path) == 0);
     CHECK(unlink(invalid_path) == 0);
     CHECK(unlink(control_path) == 0);

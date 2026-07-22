@@ -1631,6 +1631,44 @@ static void test_incremental_search(void)
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
 }
 
+static void test_incremental_search_context(void)
+{
+    KmBuffer *first = make_base((const uint8_t *)"one two", 7);
+    KmBuffer *second = make_base((const uint8_t *)"other", 5);
+    KmView *view = NULL;
+    KmView *writer = NULL;
+    KmCommandLoop *loop = NULL;
+    KmError error;
+
+    CHECK(km_view_create(first, &view, &error) == KM_OK);
+    CHECK(km_view_create(first, &writer, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 's', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, 't', 1, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 4);
+    CHECK(km_view_insert_utf8_block(writer, (const uint8_t *)"x", 1,
+                                    &error) == KM_OK);
+    CHECK(km_view_point(view).v == 5);
+    CHECK(dispatch_key(loop, view, 's', KM_MOD_CTRL, &error) ==
+          KM_ERR_CONFLICT);
+    CHECK(!km_command_loop_search_active(loop));
+    CHECK(km_view_point(view).v == 5);
+
+    CHECK(dispatch_key(loop, view, 's', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_set_buffer(view, second, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'g', KM_MOD_CTRL, &error) ==
+          KM_ERR_CONFLICT);
+    CHECK(!km_command_loop_search_active(loop));
+    CHECK(km_view_buffer(view) == second);
+    CHECK(km_view_point(view).v == 0);
+
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_view_destroy(writer, &error) == KM_OK);
+    CHECK(km_buffer_destroy(first, &error) == KM_OK);
+    CHECK(km_buffer_destroy(second, &error) == KM_OK);
+}
+
 static void test_minibuffer_requests(void)
 {
     static const uint8_t cjk[] = {0xe4, 0xb8, 0xad};
@@ -2129,6 +2167,7 @@ int main(void)
     test_command_loop_atomic_edits();
     test_lines_mark_kill_and_yank();
     test_incremental_search();
+    test_incremental_search_context();
     test_minibuffer_requests();
     test_case_space_and_line_commands();
     test_quoted_insert_and_query_replace();

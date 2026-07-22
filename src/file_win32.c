@@ -3,8 +3,7 @@
 #include <shellapi.h>
 
 #include "file.h"
-
-#include "utf8proc.h"
+#include "file_text.h"
 
 #include <stdbool.h>
 #include <limits.h>
@@ -12,12 +11,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
-
-typedef enum {
-    KM_EOL_LF,
-    KM_EOL_CRLF,
-    KM_EOL_CR
-} KmEolStyle;
 
 typedef struct {
     DWORD volume;
@@ -39,12 +32,22 @@ struct KmFile {
     KmPath *path;
     KmFileIdentity identity;
     DWORD attributes;
-    KmEolStyle eol;
-    bool bom;
+    KmFileTextFormat format;
     bool exists;
+    bool identity_pending;
+    bool pending_attributes_known;
 };
 
 static volatile LONG temporary_counter;
+
+#ifdef KM_FILE_TESTING
+static bool test_fail_post_commit_refresh;
+
+void km_file_test_fail_post_commit_refresh_once(void)
+{
+    test_fail_post_commit_refresh = true;
+}
+#endif
 
 static KmStatus fail(KmError *error, KmStatus status, const char *operation,
                      DWORD os_code)
@@ -67,6 +70,43 @@ static bool same_identity(const KmFileIdentity *left,
            left->size_high == right->size_high &&
            left->size_low == right->size_low && left->links == right->links &&
            left->attributes == right->attributes;
+}
+
+static bool same_commit_witness(const KmFile *file,
+                                const KmFileIdentity *current)
+{
+    const KmFileIdentity *witness = &file->identity;
+
+    return current->volume == witness->volume &&
+           current->index_high == witness->index_high &&
+           current->index_low == witness->index_low &&
+           CompareFileTime(&current->write_time, &witness->write_time) == 0 &&
+           current->size_high == witness->size_high &&
+           current->size_low == witness->size_low &&
+           current->links == witness->links &&
+           (!file->pending_attributes_known ||
+            current->attributes == witness->attributes);
+}
+
+static DWORD settable_attributes(DWORD attributes)
+{
+    DWORD result = attributes &
+                   (FILE_ATTRIBUTE_ARCHIVE | FILE_ATTRIBUTE_HIDDEN |
+                    FILE_ATTRIBUTE_NOT_CONTENT_INDEXED |
+                    FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_READONLY |
+                    FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_TEMPORARY);
+    return result == 0 ? FILE_ATTRIBUTE_NORMAL : result;
+}
+
+static bool fail_post_commit_refresh(void)
+{
+#ifdef KM_FILE_TESTING
+    if (test_fail_post_commit_refresh) {
+        test_fail_post_commit_refresh = false;
+        return true;
+    }
+#endif
+    return false;
 }
 
 static KmFileIdentity identity_from_info(const BY_HANDLE_FILE_INFORMATION *info)
@@ -611,73 +651,6 @@ static KmStatus read_all(HANDLE handle, size_t expected, uint8_t **out,
     return KM_OK;
 }
 
-static bool valid_utf8(const uint8_t *bytes, size_t len)
-{
-    size_t offset = 0;
-
-    while (offset < len) {
-        utf8proc_int32_t codepoint;
-        utf8proc_ssize_t count = utf8proc_iterate(
-            bytes + offset, (utf8proc_ssize_t)(len - offset), &codepoint);
-        if (count <= 0) return false;
-        offset += (size_t)count;
-    }
-    return true;
-}
-
-static KmStatus normalize_text(const uint8_t *bytes, size_t len,
-                               KmFile *file, uint8_t **out_text,
-                               size_t *out_len, KmError *error)
-{
-    size_t offset = 0;
-    size_t output = 0;
-    size_t lf = 0;
-    size_t crlf = 0;
-    size_t cr = 0;
-    const uint8_t *body;
-    uint8_t *text;
-
-    file->bom = len >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb &&
-                bytes[2] == 0xbf;
-    if (file->bom) offset = 3;
-    body = len == offset ? NULL : bytes + offset;
-    if (!valid_utf8(body, len - offset)) {
-        return fail(error, KM_ERR_INVALID, "file UTF-8", 0);
-    }
-    for (size_t i = offset; i < len; ++i) {
-        if (bytes[i] == '\r') {
-            if (i + 1 < len && bytes[i + 1] == '\n') {
-                ++crlf;
-                ++i;
-            } else {
-                ++cr;
-            }
-        } else if (bytes[i] == '\n') {
-            ++lf;
-        }
-    }
-    if ((lf != 0) + (crlf != 0) + (cr != 0) > 1) {
-        return fail(error, KM_ERR_INVALID, "mixed file line endings", 0);
-    }
-    file->eol = crlf != 0 ? KM_EOL_CRLF : (cr != 0 ? KM_EOL_CR : KM_EOL_LF);
-    text = len == offset ? NULL : (uint8_t *)malloc(len - offset);
-    if (len != offset && text == NULL) {
-        return fail(error, KM_ERR_OOM, "normalize file", 0);
-    }
-    while (offset < len) {
-        if (bytes[offset] == '\r') {
-            text[output++] = '\n';
-            if (offset + 1 < len && bytes[offset + 1] == '\n') ++offset;
-        } else {
-            text[output++] = bytes[offset];
-        }
-        ++offset;
-    }
-    *out_text = text;
-    *out_len = output;
-    return KM_OK;
-}
-
 KmStatus km_file_load(KmPath *path, KmFile **out_file, uint8_t **out_text,
                       size_t *out_len, KmError *error)
 {
@@ -705,7 +678,7 @@ KmStatus km_file_load(KmPath *path, KmFile **out_file, uint8_t **out_text,
         return fail(error, KM_ERR_OOM, "load file", 0);
     }
     file->path = path;
-    file->eol = KM_EOL_LF;
+    file->format.eol = KM_EOL_LF;
     {
         DWORD path_attributes = GetFileAttributesW(path->wide);
         if (path_attributes != INVALID_FILE_ATTRIBUTES &&
@@ -774,7 +747,8 @@ KmStatus km_file_load(KmPath *path, KmFile **out_file, uint8_t **out_text,
     file->identity = identity_from_info(&after);
     file->attributes = after.dwFileAttributes;
     file->exists = true;
-    status = normalize_text(bytes, len, file, out_text, out_len, error);
+    status = km_file_text_decode(bytes, len, &file->format,
+                                 out_text, out_len, error);
     if (status != KM_OK) goto failed;
     free(bytes);
     *out_file = file;
@@ -831,42 +805,10 @@ static KmStatus write_all(HANDLE handle, const uint8_t *bytes, size_t len,
     return KM_OK;
 }
 
-static KmStatus write_document(HANDLE handle, const KmFile *file,
-                               const KmDocument *document, KmError *error)
+static KmStatus write_file_text(void *context, const uint8_t *bytes,
+                                size_t len, KmError *error)
 {
-    static const uint8_t bom[] = {0xef, 0xbb, 0xbf};
-    uint8_t input[4096];
-    uint8_t output[8192];
-    KmTextIter iterator;
-    bool eof = false;
-    KmStatus status;
-
-    if (file->bom) {
-        status = write_all(handle, bom, sizeof(bom), error);
-        if (status != KM_OK) return status;
-    }
-    status = km_document_iter_init(document, (KmBytePos){0}, &iterator, error);
-    if (status != KM_OK) return status;
-    while (!eof) {
-        size_t count;
-        size_t output_len = 0;
-        status = km_text_iter_read(&iterator, input, sizeof(input), &count,
-                                   &eof, error);
-        if (status != KM_OK) return status;
-        for (size_t i = 0; i < count; ++i) {
-            if (input[i] == '\n' && file->eol == KM_EOL_CRLF) {
-                output[output_len++] = '\r';
-                output[output_len++] = '\n';
-            } else if (input[i] == '\n' && file->eol == KM_EOL_CR) {
-                output[output_len++] = '\r';
-            } else {
-                output[output_len++] = input[i];
-            }
-        }
-        status = write_all(handle, output, output_len, error);
-        if (status != KM_OK) return status;
-    }
-    return KM_OK;
+    return write_all((HANDLE)context, bytes, len, error);
 }
 
 static WCHAR *temporary_name(const WCHAR *path)
@@ -935,31 +877,48 @@ static KmStatus current_identity(const WCHAR *path, KmFileIdentity *identity,
 }
 
 KmStatus km_file_save(KmFile *file, const KmDocument *document,
-                      KmError *error)
+                      KmFileSaveResult *result, KmError *error)
 {
     KmFileIdentity current;
+    KmFileIdentity witness;
     bool exists;
+    bool was_existing;
+    DWORD preserved_attributes = FILE_ATTRIBUTE_NORMAL;
+    DWORD writable_attributes = FILE_ATTRIBUTE_NORMAL;
     WCHAR *temporary = NULL;
     HANDLE handle = INVALID_HANDLE_VALUE;
     bool replaced = false;
+    bool made_writable = false;
     KmStatus status;
 
     km_error_clear(error);
-    if (file == NULL || document == NULL) {
+    if (result != NULL) *result = (KmFileSaveResult){0};
+    if (file == NULL || document == NULL || result == NULL) {
         return fail(error, KM_ERR_INVALID, "save file", 0);
     }
     status = current_identity(file->path->wide, &current, &exists, error);
     if (status != KM_OK) return status;
-    if (exists != file->exists ||
-        (exists && !same_identity(&current, &file->identity))) {
+    if (file->identity_pending) {
+        if (!exists || !same_commit_witness(file, &current)) {
+            return fail(error, KM_ERR_CONFLICT,
+                        "file changed after committed save", 0);
+        }
+        file->identity = current;
+        file->attributes = current.attributes;
+        file->exists = true;
+        file->identity_pending = false;
+    } else if (exists != file->exists ||
+               (exists && !same_identity(&current, &file->identity))) {
         return fail(error, KM_ERR_CONFLICT, "file changed on disk", 0);
     }
     for (unsigned attempt = 0; attempt < 100; ++attempt) {
         free(temporary);
         temporary = temporary_name(file->path->wide);
         if (temporary == NULL) return fail(error, KM_ERR_OOM, "save file", 0);
-        handle = CreateFileW(temporary, GENERIC_WRITE, 0, NULL, CREATE_NEW,
-                             FILE_ATTRIBUTE_NORMAL, NULL);
+        handle = CreateFileW(temporary, GENERIC_WRITE,
+                             FILE_SHARE_READ | FILE_SHARE_WRITE |
+                                 FILE_SHARE_DELETE,
+                             NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
         if (handle != INVALID_HANDLE_VALUE || GetLastError() != ERROR_FILE_EXISTS) {
             break;
         }
@@ -968,52 +927,131 @@ KmStatus km_file_save(KmFile *file, const KmDocument *document,
         status = fail(error, KM_ERR_IO, "create temporary file", GetLastError());
         goto done;
     }
-    status = write_document(handle, file, document, error);
+    status = km_file_text_write_document(&file->format, document, handle,
+                                         write_file_text, error);
     if (status != KM_OK) goto done;
     if (!FlushFileBuffers(handle)) {
         status = fail(error, KM_ERR_IO, "flush temporary file", GetLastError());
         goto done;
     }
     if (!CloseHandle(handle)) {
+        status = fail(error, KM_ERR_IO, "close temporary file",
+                      GetLastError());
         handle = INVALID_HANDLE_VALUE;
-        status = fail(error, KM_ERR_IO, "close temporary file", GetLastError());
         goto done;
     }
     handle = INVALID_HANDLE_VALUE;
-    if (file->exists) {
+    status = current_identity(temporary, &witness, &exists, error);
+    if (status != KM_OK) goto done;
+    if (!exists) {
+        status = fail(error, KM_ERR_IO, "inspect temporary file",
+                      ERROR_FILE_NOT_FOUND);
+        goto done;
+    }
+    was_existing = file->exists;
+    if (was_existing) {
+        preserved_attributes = settable_attributes(file->attributes);
+        writable_attributes =
+            settable_attributes(file->attributes & ~FILE_ATTRIBUTE_READONLY);
+        if ((file->attributes & FILE_ATTRIBUTE_READONLY) != 0) {
+            if (!SetFileAttributesW(file->path->wide, writable_attributes)) {
+                status = fail(error, KM_ERR_IO,
+                              "make file writable for replace", GetLastError());
+                goto done;
+            }
+            made_writable = true;
+        }
+    }
+    if (was_existing) {
         if (!ReplaceFileW(file->path->wide, temporary, NULL,
                           REPLACEFILE_WRITE_THROUGH, NULL, NULL)) {
-            status = fail(error, KM_ERR_IO, "replace file", GetLastError());
+            DWORD replace_error = GetLastError();
+            if (made_writable &&
+                !SetFileAttributesW(file->path->wide,
+                                    preserved_attributes)) {
+                status = fail(error, KM_ERR_IO,
+                              "restore file attributes after failed replace",
+                              GetLastError());
+            } else {
+                status = fail(error, KM_ERR_IO, "replace file", replace_error);
+            }
             goto done;
         }
     } else if (!MoveFileExW(temporary, file->path->wide,
                             MOVEFILE_WRITE_THROUGH)) {
-        status = fail(error, KM_ERR_IO, "replace file", GetLastError());
+        DWORD code = GetLastError();
+        status = fail(error,
+                      code == ERROR_FILE_EXISTS ||
+                              code == ERROR_ALREADY_EXISTS
+                          ? KM_ERR_CONFLICT
+                          : KM_ERR_IO,
+                      "replace file", code);
         goto done;
     }
     replaced = true;
-    if (file->exists) {
-        DWORD preserved = file->attributes &
-                          (FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_HIDDEN |
-                           FILE_ATTRIBUTE_SYSTEM | FILE_ATTRIBUTE_ARCHIVE |
-                           FILE_ATTRIBUTE_NOT_CONTENT_INDEXED);
-        if (preserved == 0) preserved = FILE_ATTRIBUTE_NORMAL;
-        if (!SetFileAttributesW(file->path->wide, preserved)) {
-            status = fail(error, KM_ERR_IO, "set saved file attributes",
+    result->committed = true;
+    file->identity = witness;
+    file->attributes = witness.attributes;
+    file->exists = true;
+    file->identity_pending = true;
+    file->pending_attributes_known = !was_existing;
+    if (was_existing) {
+        if (!SetFileAttributesW(file->path->wide, preserved_attributes)) {
+            status = fail(error, KM_ERR_IO,
+                          "saved content committed; set file attributes",
                           GetLastError());
-            goto done;
+        }
+        {
+            DWORD committed_attributes =
+                GetFileAttributesW(file->path->wide);
+            if (committed_attributes != INVALID_FILE_ATTRIBUTES) {
+                file->identity.attributes = committed_attributes;
+                file->attributes = committed_attributes;
+                file->pending_attributes_known = true;
+            } else if (status == KM_OK) {
+                status = fail(
+                    error, KM_ERR_IO,
+                    "saved content committed; inspect file attributes",
+                    GetLastError());
+            }
         }
     }
-    status = current_identity(file->path->wide, &file->identity,
-                              &file->exists, error);
-    if (status != KM_OK || !file->exists) {
+    if (fail_post_commit_refresh()) {
         if (status == KM_OK) {
-            status = fail(error, KM_ERR_IO, "inspect saved file", 0);
+            status = fail(error, KM_ERR_IO,
+                          "saved content committed; inspect file",
+                          ERROR_READ_FAULT);
         }
-        goto done;
+    } else {
+        KmError refresh_error;
+        KmStatus refresh =
+            current_identity(file->path->wide, &current, &exists,
+                             &refresh_error);
+        if (refresh != KM_OK) {
+            if (status == KM_OK) {
+                status = fail(error, refresh,
+                              "saved content committed; inspect file",
+                              refresh_error.os_code);
+            }
+        } else if (!exists) {
+            if (status == KM_OK) {
+                status = fail(error, KM_ERR_CONFLICT,
+                              "saved content committed; file changed on disk",
+                              0);
+            }
+        } else if (!same_commit_witness(file, &current)) {
+            if (status == KM_OK) {
+                status = fail(
+                    error, KM_ERR_CONFLICT,
+                    "saved content committed; file changed on disk", 0);
+            }
+        } else {
+            file->identity = current;
+            file->attributes = current.attributes;
+            file->identity_pending = false;
+            file->pending_attributes_known = false;
+        }
     }
-    file->attributes = file->identity.attributes;
-    status = KM_OK;
 
 done:
     if (handle != INVALID_HANDLE_VALUE) CloseHandle(handle);

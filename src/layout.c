@@ -511,6 +511,7 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     size_t text_columns;
     size_t line_base;
     KmCellGrid *grid = NULL;
+    KmLayoutPass pass_template = {0};
     KmLayoutPass pass = {0};
     KmLayoutResult result = {0};
     KmStatus status;
@@ -546,22 +547,40 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
                        ? line_number_gutter(text, len, line_base, columns)
                        : 0;
     text_columns = columns - gutter_width;
-    pass.text = text;
-    pass.len = len;
-    pass.point = point.v - start.v;
-    pass.columns = text_columns;
-    pass.gutter_width = gutter_width;
-    pass.line_number_base = line_base;
-    pass.content_rows = content_rows;
-    pass.region_active = km_buffer_mark_active(buffer);
-    pass.region_start = mark.v < point.v ? mark.v - start.v : point.v - start.v;
-    pass.region_end = mark.v < point.v ? point.v - start.v : mark.v - start.v;
+    status = km_cell_grid_create(rows, columns, &grid, error);
+    if (status != KM_OK) goto fail;
+    pass_template.text = text;
+    pass_template.len = len;
+    pass_template.point = point.v - start.v;
+    pass_template.columns = text_columns;
+    pass_template.gutter_width = gutter_width;
+    pass_template.line_number_base = line_base;
+    pass_template.scroll_row = scroll_row;
+    pass_template.content_rows = content_rows;
+    pass_template.grid = grid;
+    pass_template.region_active = km_buffer_mark_active(buffer);
+    pass_template.region_start =
+        mark.v < point.v ? mark.v - start.v : point.v - start.v;
+    pass_template.region_end =
+        mark.v < point.v ? point.v - start.v : mark.v - start.v;
+    pass = pass_template;
     status = run_layout_pass(&pass, error);
     if (status != KM_OK) goto fail;
     if (pass.cursor_row < scroll_row) {
         scroll_row = pass.cursor_row;
     } else if (pass.cursor_row - scroll_row >= content_rows) {
         scroll_row = pass.cursor_row - content_rows + 1;
+    }
+    if (scroll_row != pass_template.scroll_row) {
+        km_cell_grid_destroy(grid);
+        grid = NULL;
+        status = km_cell_grid_create(rows, columns, &grid, error);
+        if (status != KM_OK) goto fail;
+        pass_template.scroll_row = scroll_row;
+        pass_template.grid = grid;
+        pass = pass_template;
+        status = run_layout_pass(&pass, error);
+        if (status != KM_OK) goto fail;
     }
     result.cursor_row = pass.cursor_row - scroll_row;
     result.cursor_column = pass.cursor_column;
@@ -570,23 +589,6 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     result.hard_line = line_base + pass.cursor_hard_line;
     result.hard_column = pass.cursor_hard_column;
 
-    status = km_cell_grid_create(rows, columns, &grid, error);
-    if (status != KM_OK) goto fail;
-    pass = (KmLayoutPass){0};
-    pass.text = text;
-    pass.len = len;
-    pass.point = point.v - start.v;
-    pass.columns = text_columns;
-    pass.gutter_width = gutter_width;
-    pass.line_number_base = line_base;
-    pass.scroll_row = scroll_row;
-    pass.content_rows = content_rows;
-    pass.grid = grid;
-    pass.region_active = km_buffer_mark_active(buffer);
-    pass.region_start = mark.v < point.v ? mark.v - start.v : point.v - start.v;
-    pass.region_end = mark.v < point.v ? point.v - start.v : mark.v - start.v;
-    status = run_layout_pass(&pass, error);
-    if (status != KM_OK) goto fail;
     if (rows > 2) {
         size_t echo_column = 0;
         status = put_status(grid, rows - 2, columns, &result,

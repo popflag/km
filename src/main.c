@@ -367,9 +367,6 @@ int main(int argc, char **argv)
                                      &initial_buffer, &core_error)
              : km_buffer_create_base(NULL, 0, &initial_buffer,
                                      &core_error)) != KM_OK) {
-        free(initial_text);
-        km_file_destroy(file);
-        file = NULL;
         set_core_error(platform_error, sizeof(platform_error), &core_error);
         goto done;
     }
