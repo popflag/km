@@ -161,7 +161,9 @@ static const KmKeyNode key_trie[] = {
      KM_NO_KEY_NODE, 34},
     {'v', KM_MOD_CTRL, KM_COMMAND_SCROLL_UP, KM_NO_KEY_NODE, 35},
     {'v', KM_MOD_ALT, KM_COMMAND_SCROLL_DOWN, KM_NO_KEY_NODE, 36},
-    {'r', KM_MOD_CTRL, KM_INTERNAL_SEARCH, KM_NO_KEY_NODE, KM_NO_KEY_NODE},
+    {'r', KM_MOD_CTRL, KM_INTERNAL_SEARCH, KM_NO_KEY_NODE, 37},
+    {'m', KM_MOD_ALT, KM_COMMAND_BACK_TO_INDENTATION,
+     KM_NO_KEY_NODE, KM_NO_KEY_NODE},
 };
 
 static KmStatus fail(KmError *error, KmStatus status, const char *operation)
@@ -537,6 +539,51 @@ static KmStatus move_line_edge(KmView *view, bool to_end, KmError *error)
     if (status == KM_OK) {
         position = to_end ? line_end_at(text, len, position)
                           : line_start_at(text, position);
+        status = km_anchor_set(view->point,
+                               (KmBytePos){start.v + position}, error);
+        if (status == KM_OK) view->preferred_column_set = false;
+    }
+    free(text);
+    return status;
+}
+
+static bool indentation_whitespace(int32_t codepoint)
+{
+    /* GNU Emacs default whitespace syntax is not Unicode White_Space. */
+    return codepoint == ' ' || codepoint == '\t' || codepoint == '\f' ||
+           codepoint == 0x00a0 || codepoint == 0x200b ||
+           (codepoint >= 0x2000 && codepoint <= 0x200a) ||
+           codepoint == 0x202f || codepoint == 0x205f ||
+           codepoint == 0x3000;
+}
+
+static KmStatus move_back_to_indentation(KmView *view, KmError *error)
+{
+    KmBytePos point;
+    KmBytePos start;
+    KmBytePos end;
+    uint8_t *text = NULL;
+    size_t len;
+    size_t position;
+    size_t line_end;
+    KmStatus status = validate_view(view, false, &point, &start, &end, error);
+
+    if (status != KM_OK) return status;
+    status = copy_accessible_text(view->buffer, &text, &len, &position, view,
+                                  error);
+    if (status != KM_OK) return status;
+    position = line_start_at(text, position);
+    line_end = line_end_at(text, len, position);
+    while (position < line_end) {
+        int32_t codepoint;
+        size_t consumed;
+
+        status = km_unicode_decode(text, len, position, &codepoint, &consumed,
+                                   error);
+        if (status != KM_OK || !indentation_whitespace(codepoint)) break;
+        position += consumed;
+    }
+    if (status == KM_OK) {
         status = km_anchor_set(view->point,
                                (KmBytePos){start.v + position}, error);
         if (status == KM_OK) view->preferred_column_set = false;
@@ -1186,6 +1233,14 @@ static KmStatus command_beginning_of_line(KmCommandLoop *loop, KmView *view,
     return command_line_edge(view, argument, false, error);
 }
 
+static KmStatus command_back_to_indentation(KmCommandLoop *loop, KmView *view,
+                                            int64_t argument, KmError *error)
+{
+    (void)loop;
+    (void)argument;
+    return move_back_to_indentation(view, error);
+}
+
 static KmStatus command_end_of_line(KmCommandLoop *loop, KmView *view,
                                     int64_t argument, KmError *error)
 {
@@ -1438,6 +1493,8 @@ static const KmCommandSpec command_registry[] = {
      command_delete_backward},
     {KM_COMMAND_BEGINNING_OF_LINE, "beginning-of-line",
      command_beginning_of_line},
+    {KM_COMMAND_BACK_TO_INDENTATION, "back-to-indentation",
+     command_back_to_indentation},
     {KM_COMMAND_END_OF_LINE, "end-of-line", command_end_of_line},
     {KM_COMMAND_NEXT_LINE, "next-line", command_next_line},
     {KM_COMMAND_PREVIOUS_LINE, "previous-line", command_previous_line},
@@ -2099,7 +2156,8 @@ static KmStatus fido_backspace(KmCommandLoop *loop, KmError *error)
 static KmStatus accept_prompt(KmCommandLoop *loop, KmView *view,
                               bool use_completion, KmError *error)
 {
-    if (use_completion && loop->completion_count != 0) {
+    if (use_completion && loop->prompt_len != 0 &&
+        loop->completion_count != 0) {
         const char *selected = loop->completions[loop->completion_index];
         KmStatus status = replace_prompt_text(loop, selected, error);
         if (status != KM_OK) return status;
@@ -2110,9 +2168,6 @@ static KmStatus accept_prompt(KmCommandLoop *loop, KmView *view,
     }
     if (loop->prompt_kind == KM_PROMPT_COMMAND) {
         return execute_named_command(loop, view, error);
-    }
-    if (loop->prompt_kind == KM_PROMPT_FIND_FILE && loop->prompt_len == 0) {
-        return fail(error, KM_ERR_INVALID, "file name empty");
     }
     loop->request = loop->prompt_kind == KM_PROMPT_FIND_FILE
                         ? KM_COMMAND_REQUEST_FIND_FILE
@@ -2851,6 +2906,7 @@ void km_command_loop_format_completions(const KmCommandLoop *loop,
          loop->prompt_kind != KM_PROMPT_COMMAND)) {
         return;
     }
+    if (loop->prompt_len == 0) return;
     if (loop->completion_count == 0) {
         append_completion_display(destination, capacity, &used,
                                   " [No matches]");

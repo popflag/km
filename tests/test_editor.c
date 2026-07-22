@@ -772,6 +772,14 @@ static void test_lines_mark_kill_and_yank(void)
         'A', 0, 'B', '\n', 0xe4, 0xb8, 0xad, 'Z',
     };
     static const uint8_t after_kill[] = {'A', 'Z'};
+    static const uint8_t indentation[] = {
+        ' ', '\t', 'f', 'o', 'o', '\n',
+        0xe3, 0x80, 0x80, 'b', 'a', 'r', '\n',
+        ' ', ' ', ' ', '\n',
+        ' ', 0xe1, 0x9a, 0x80, 'x', '\n',
+        ' ', 0xe2, 0x80, 0xa8, 'x', '\n',
+        ' ', 0xe2, 0x80, 0xa9, 'x', '\n',
+    };
     KmBuffer *buffer = make_base(lines, sizeof(lines));
     KmView *view = NULL;
     KmCommandLoop *loop = NULL;
@@ -792,6 +800,46 @@ static void test_lines_mark_kill_and_yank(void)
     CHECK(km_view_point(view).v == 6);
     CHECK(dispatch_key(loop, view, KM_KEY_END, 0, &error) == KM_OK);
     CHECK(km_view_point(view).v == 8);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    buffer = make_base(indentation, sizeof(indentation));
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){4}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'a', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 0);
+    CHECK(dispatch_key(loop, view, 'm', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 2);
+    CHECK(km_view_set_point(view, (KmBytePos){11}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'm', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 9);
+    CHECK(km_view_set_point(view, (KmBytePos){14}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'm', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 16);
+    CHECK(km_view_set_point(view, (KmBytePos){21}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'm', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 18);
+    CHECK(km_view_set_point(view, (KmBytePos){27}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'm', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 24);
+    CHECK(km_view_set_point(view, (KmBytePos){33}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'm', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 30);
+    CHECK(km_buffer_narrow(buffer, (KmBytePos){1}, (KmBytePos){5}, &error) ==
+          KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){4}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'm', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 2);
+    CHECK(km_buffer_widen(buffer, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){4}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_text_block(loop, view,
+                              (const uint8_t *)"back-to-indentation", 19,
+                              &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 2);
     km_command_loop_destroy(loop);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
@@ -983,6 +1031,14 @@ static void test_minibuffer_requests(void)
     CHECK(dispatch_key_repeat(loop, view, 'f', KM_MOD_CTRL, 2, &error) ==
           KM_OK);
     CHECK(km_command_loop_prompt_active(loop));
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(prompt[0] == '\0');
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_FIND_FILE);
+    CHECK(km_command_loop_request_text(loop)[0] == '\0');
+    km_command_loop_clear_request(loop);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'f', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_key(loop, view, 'k', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_text_block(loop, view, (const uint8_t *)"note-", 5,
                               &error) == KM_OK);
@@ -1000,6 +1056,18 @@ static void test_minibuffer_requests(void)
     CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_FIND_FILE);
     CHECK(strcmp(km_command_loop_request_text(loop),
                  "note-\xe4\xb8\xad") == 0);
+    km_command_loop_clear_request(loop);
+
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'b', 0, &error) == KM_OK);
+    km_command_loop_clear_request(loop);
+    CHECK(km_command_loop_set_completions(loop, buffer_matches, 1,
+                                          "*scratch*", &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(prompt[0] == '\0');
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_SWITCH_BUFFER);
+    CHECK(km_command_loop_request_text(loop)[0] == '\0');
     km_command_loop_clear_request(loop);
 
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
@@ -1025,6 +1093,10 @@ static void test_minibuffer_requests(void)
                               &error) == KM_OK);
     CHECK(km_view_point(view).v == 3);
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(prompt[0] == '\0');
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_ERR_INVALID);
+    CHECK(km_command_loop_prompt_active(loop));
     CHECK(dispatch_text_block(loop, view,
                               (const uint8_t *)"beg", 3,
                               &error) == KM_OK);

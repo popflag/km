@@ -449,7 +449,8 @@ int main(int argc, char **argv)
         case KM_COMMAND_REQUEST_FIND_FILE: {
             const char *name = km_command_loop_request_text(loop);
             km_command_loop_clear_request(loop);
-            status = visit_file(&buffers, view, name, &core_error);
+            status = visit_file(&buffers, view, name[0] == '\0' ? "." : name,
+                                &core_error);
             if (status == KM_OK) {
                 (void)snprintf(message, sizeof(message), "Opened");
             } else {

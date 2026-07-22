@@ -39,7 +39,8 @@
 - `C-x C-s` 使用同目录排他临时文件、数据 flush 和原子 replace；保存前
   检查文件 identity，成功后才更新 `saved_state_id`。
 - 支持 code-point 左右移动/删除、按 cell column 的上下移动、行首/行尾、
-  mark/region、`C-w`、`M-w`、`C-k`、`C-y`、undo/redo 和大小写敏感的
+  `M-m` 首个非空白字符、mark/region、`C-w`、`M-w`、`C-k`、`C-y`、
+  undo/redo 和大小写敏感的
   UTF-8 增量搜索。`C-s`/`C-r` 切换前后方向并重复查找，越过 accessible
   range 边界时环绕；提示行区分 forward、backward、wrapped 和 failing。
   `DEL` 回退一个 Unicode code point，`RET` 接受，`C-g` 取消并恢复搜索起点。
@@ -55,6 +56,8 @@
   保存失败保持会话打开。
 - minibuffer 对 `M-x`、Buffer 名和文件路径实时显示单行 Fido 风格候选：
   多候选使用 `{a | b}`，确定部分和唯一匹配使用 `[...]` / `[Matched]`。
+  与 GNU Emacs 默认 `fido-mode` 一致，初始空输入不显示或接受候选首项；
+  输入字符后才显示候选，空输入 `RET` 保留 minibuffer 默认值语义。
   `C-s`/右方向键和 `C-r`/左方向键循环候选，`RET` 接受当前首项，`M-j`
   保留原输入，Tab 执行确定性的最长公共前缀补全。文件目录候选追加路径分隔符，
   `RET` 进入目录，目录末尾的 DEL 返回上一级。第一版仍是前缀匹配，不做
