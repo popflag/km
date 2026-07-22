@@ -400,6 +400,30 @@ static void test_recenter_scroll(void)
           KM_ERR_INVALID);
 }
 
+static void test_move_to_window_line(void)
+{
+    static const uint8_t text[] = "0\n1\n2\n3\n4\n5\n";
+    KmBuffer *buffer = NULL;
+    KmView *view = NULL;
+    KmError error;
+
+    CHECK(km_buffer_create_base(text, sizeof(text) - 1, &buffer, &error) ==
+          KM_OK);
+    km_buffer_set_line_numbers_visible(buffer, false);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_layout_move_to_window_line(buffer, view, 7, 20, 2, false, 1,
+                                        &error) == KM_OK);
+    CHECK(km_view_point(view).v == 8);
+    CHECK(km_layout_move_to_window_line(buffer, view, 7, 20, 2, true, 0,
+                                        &error) == KM_OK);
+    CHECK(km_view_point(view).v == 4);
+    CHECK(km_layout_move_to_window_line(buffer, view, 7, 20, 2, true, -1,
+                                        &error) == KM_OK);
+    CHECK(km_view_point(view).v == 12);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+}
+
 int main(void)
 {
     test_unicode_and_controls();
@@ -408,6 +432,7 @@ int main(void)
     test_line_number_gutter();
     test_scroll_commands();
     test_recenter_scroll();
+    test_move_to_window_line();
     puts("layout tests passed");
     return 0;
 }

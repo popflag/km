@@ -790,6 +790,23 @@ done:
     return status;
 }
 
+static size_t requested_window_row(size_t content_rows, bool has_argument,
+                                   int64_t argument)
+{
+    if (!has_argument) return content_rows / 2;
+    if (argument >= 0) {
+        return (uint64_t)argument >= (uint64_t)content_rows
+                   ? content_rows - 1
+                   : (size_t)argument;
+    }
+    {
+        uint64_t from_bottom = (uint64_t)(-(argument + 1)) + 1u;
+        return from_bottom >= (uint64_t)content_rows
+                   ? 0
+                   : content_rows - (size_t)from_bottom;
+    }
+}
+
 KmStatus km_layout_recenter_scroll(const KmLayoutResult *layout, size_t rows,
                                    bool has_argument, int64_t argument,
                                    size_t *out_scroll_row, KmError *error)
@@ -805,19 +822,7 @@ KmStatus km_layout_recenter_scroll(const KmLayoutResult *layout, size_t rows,
         return fail(error, KM_ERR_INVALID, "recenter view");
     }
     content_rows = content_row_count(rows);
-    if (!has_argument) {
-        /* ponytail: add center/top/bottom cycling when users need it. */
-        desired_row = content_rows / 2;
-    } else if (argument >= 0) {
-        desired_row = (uint64_t)argument >= (uint64_t)content_rows
-                          ? content_rows - 1
-                          : (size_t)argument;
-    } else {
-        uint64_t from_bottom = (uint64_t)(-(argument + 1)) + 1u;
-        desired_row = from_bottom >= (uint64_t)content_rows
-                          ? 0
-                          : content_rows - (size_t)from_bottom;
-    }
+    desired_row = requested_window_row(content_rows, has_argument, argument);
     cursor_row = layout->scroll_row + layout->cursor_row;
     max_scroll = layout->visual_rows > content_rows
                      ? layout->visual_rows - content_rows
@@ -827,4 +832,97 @@ KmStatus km_layout_recenter_scroll(const KmLayoutResult *layout, size_t rows,
                           : 0;
     if (*out_scroll_row > max_scroll) *out_scroll_row = max_scroll;
     return KM_OK;
+}
+
+KmStatus km_layout_move_to_window_line(const KmBuffer *buffer, KmView *view,
+                                       size_t rows, size_t columns,
+                                       size_t scroll_row, bool has_argument,
+                                       int64_t argument, KmError *error)
+{
+    const KmDocument *document;
+    KmBytePos start;
+    KmBytePos end;
+    KmBytePos point;
+    uint8_t *text = NULL;
+    size_t len;
+    size_t content_rows;
+    size_t line_base;
+    size_t gutter_width;
+    size_t target_row;
+    size_t max_scroll;
+    KmLayoutPass pass = {0};
+    KmStatus status;
+
+    km_error_clear(error);
+    if (buffer == NULL || view == NULL || km_view_buffer(view) != buffer ||
+        rows == 0 || columns == 0) {
+        return fail(error, KM_ERR_INVALID, "move to window line");
+    }
+    document = km_buffer_document(buffer);
+    start = km_buffer_accessible_start(buffer);
+    end = km_buffer_accessible_end(buffer);
+    point = km_view_point(view);
+    if (document == NULL || start.v > point.v || point.v > end.v) {
+        return fail(error, KM_ERR_INVALID, "move to window line");
+    }
+    len = end.v - start.v;
+    if (len != 0) {
+        text = (uint8_t *)malloc(len);
+        if (text == NULL) return fail(error, KM_ERR_OOM, "layout text");
+        status = km_document_copy(document, start, len, text, error);
+        if (status != KM_OK) goto done;
+    }
+    status = line_number_base(document, start, &line_base, error);
+    if (status != KM_OK) goto done;
+    gutter_width = km_buffer_line_numbers_visible(buffer)
+                       ? line_number_gutter(text, len, line_base, columns)
+                       : 0;
+    content_rows = content_row_count(rows);
+    pass.text = text;
+    pass.len = len;
+    pass.point = point.v - start.v;
+    pass.columns = columns - gutter_width;
+    pass.gutter_width = gutter_width;
+    pass.line_number_base = line_base;
+    pass.content_rows = content_rows;
+    status = run_layout_pass(&pass, error);
+    if (status != KM_OK) goto done;
+    if (pass.visual_rows == 0) {
+        status = fail(error, KM_ERR_INVALID, "move to window line");
+        goto done;
+    }
+    max_scroll = pass.visual_rows > content_rows
+                     ? pass.visual_rows - content_rows
+                     : 0;
+    if (scroll_row > max_scroll) scroll_row = max_scroll;
+    target_row = requested_window_row(content_rows, has_argument, argument);
+    if (target_row > SIZE_MAX - scroll_row) {
+        status = fail(error, KM_ERR_INVALID, "move to window line");
+        goto done;
+    }
+    target_row += scroll_row;
+    if (target_row >= pass.visual_rows) target_row = pass.visual_rows - 1;
+    pass = (KmLayoutPass){0};
+    pass.text = text;
+    pass.len = len;
+    pass.point = point.v - start.v;
+    pass.columns = columns - gutter_width;
+    pass.gutter_width = gutter_width;
+    pass.line_number_base = line_base;
+    pass.content_rows = content_rows;
+    pass.seek_active = true;
+    pass.seek_row = target_row;
+    status = run_layout_pass(&pass, error);
+    if (status != KM_OK) goto done;
+    if (!pass.seek_set || pass.seek_offset > len ||
+        start.v > SIZE_MAX - pass.seek_offset) {
+        status = fail(error, KM_ERR_INVALID, "move to window line");
+        goto done;
+    }
+    status = km_view_set_point(
+        view, (KmBytePos){start.v + pass.seek_offset}, error);
+
+done:
+    free(text);
+    return status;
 }

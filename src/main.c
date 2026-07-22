@@ -565,6 +565,24 @@ int main(int argc, char **argv)
             }
             break;
         }
+        case KM_COMMAND_REQUEST_MOVE_TO_WINDOW_LINE: {
+            int64_t argument = km_command_loop_request_argument(loop);
+            bool has_argument =
+                km_command_loop_request_has_argument(loop);
+            unsigned columns;
+            unsigned rows;
+
+            km_command_loop_clear_request(loop);
+            km_platform_size(platform, &columns, &rows);
+            status = km_layout_move_to_window_line(
+                buffers.items[buffers.current].buffer, view, rows, columns,
+                buffers.items[buffers.current].scroll_row, has_argument,
+                argument, &core_error);
+            if (status != KM_OK) {
+                set_core_error(message, sizeof(message), &core_error);
+            }
+            break;
+        }
         case KM_COMMAND_REQUEST_EXIT:
             km_command_loop_clear_request(loop);
             if (!any_modified_buffer(&buffers)) {

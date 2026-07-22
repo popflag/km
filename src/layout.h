@@ -27,5 +27,9 @@ KmStatus km_layout_scroll_view(const KmBuffer *buffer, KmView *view,
 KmStatus km_layout_recenter_scroll(const KmLayoutResult *layout, size_t rows,
                                    bool has_argument, int64_t argument,
                                    size_t *out_scroll_row, KmError *error);
+KmStatus km_layout_move_to_window_line(const KmBuffer *buffer, KmView *view,
+                                       size_t rows, size_t columns,
+                                       size_t scroll_row, bool has_argument,
+                                       int64_t argument, KmError *error);
 
 #endif

@@ -435,6 +435,16 @@ static bool build_test_editor(void)
                             sources, NOB_ARRAY_LEN(sources), false);
 }
 
+static bool build_test_transcript(void)
+{
+    const char *sources[] = {
+        "src/base.c", "src/document.c", "src/editor.c", "src/unicode.c",
+        KM_FILE_SOURCE,
+    };
+    return build_executable("test_transcript", "tests/test_transcript.c",
+                            sources, NOB_ARRAY_LEN(sources), false);
+}
+
 static bool build_test_layout(void)
 {
     const char *sources[] = {
@@ -487,6 +497,7 @@ static bool run_test(const char *name)
 static bool test(void)
 {
     if (!build_km() || !build_test_document() || !build_test_editor() ||
+        !build_test_transcript() ||
         !build_test_layout() ||
         !build_test_render() ||
         !build_test_file() ||
@@ -498,12 +509,18 @@ static bool test(void)
         return false;
     }
     if (!run_test("test_document") || !run_test("test_editor") ||
+        !run_test("test_transcript") ||
         !run_test("test_layout") ||
         !run_test("test_render") ||
         !run_test("test_file") ||
         !run_test("test_platform")) return false;
 #ifndef _WIN32
     if (!run_test("test_platform_pty")) return false;
+    {
+        Nob_Cmd cmd = {0};
+        nob_cmd_append(&cmd, "sh", "tests/test_emacs_transcript.sh");
+        if (!nob_cmd_run(&cmd, .dont_reset = false)) return false;
+    }
 #endif
     return true;
 }

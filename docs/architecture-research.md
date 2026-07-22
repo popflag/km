@@ -40,8 +40,12 @@
   检查文件 identity，成功后才更新 `saved_state_id`。
 - 支持 code-point 左右移动/删除、按 cell column 的上下移动、行首/行尾、
   Buffer 边界、空白行分隔的段落移动、默认双空格规则的句子移动、`M-m`
-  首个非空白字符、mark/region、`C-x h`、`C-w`、`M-w`、`C-k`、`M-d`、
-  `M-DEL`、`C-y`、`M-y`、`C-o`、`C-t`、`M-t`、`M-\`、`M-g g`、`C-l`、
+  首个非空白字符、16 项 Buffer-local mark ring、inactive mark、`C-u C-SPC`
+  mark 轮换、mark/region、`M-@`、`C-x h`、`C-w`、`M-w`、带正负 numeric
+  prefix 的 `C-k`、`M-d`、
+  `M-DEL`、`C-y`、`M-y`、`C-o`、`C-t`、`M-t`、`C-x C-t`、`M-\`、
+  `M-SPC`、`M-^`、`C-x C-o`、`M-u`/`M-l`/`M-c`、`C-q`、`M-g g`、
+  `M-g c`、`M-r`、`C-l`、
   undo/redo 和大小写敏感的
   UTF-8 增量搜索。`C-s`/`C-r` 切换前后方向并重复查找，越过 accessible
   range 边界时环绕；提示行区分 forward、backward、wrapped 和 failing。
@@ -78,19 +82,26 @@
   后的 visual row 滚动。无 prefix 时保留 2 行上下文；数字 prefix 指定行数，
   负数反向，`C-u -` / `M--` 保留 Emacs 的反向整页语义。point 仅在将离开
   新 viewport 时移动到可见边界。
-- `C-l` 将 point 居中，numeric prefix 指定从顶部或底部计算的屏幕行；当前不做
-  连续 `C-l` 的 center/top/bottom 轮换。`M-g g` 使用 document-global 行号，
-  但目标在 narrowing 外时拒绝移动，不像 GNU Emacs `goto-line` 那样隐式 widen。
+- `C-l` 首次将 point 居中，连续调用按 center/top/bottom 轮换；numeric prefix
+  指定从顶部或底部计算的屏幕行。`M-r` 按同一 visual-row/gutter/wrap 模型移动
+  point。`M-g g` 和 `M-g c` 使用 document-global 位置，但目标在 narrowing 外
+  时拒绝移动，不隐式 widen。
 - kill ring 保留最近 60 个 entry；连续前向 kill 追加、连续后向 kill 前置，
   `M-y` 只在紧随 `C-y`/`M-y` 且 Document revision 未改变时替换上一段 yank。
   完整 Emacs undo 遍历仍需差分测试后扩展。
+- `C-y` 将 inactive mark 放在 yank 起点；`C-t 0` 交换 point 与 mark 所指字符，
+  并将两个位置作为同一 Document transaction 的 anchor metadata 参与 undo/redo。
+- `M-%` 提供大小写敏感的 UTF-8 字面 query replace，支持 `y`、`n`、`!`、`q`
+  和 `C-g`；`!` 在分配和边界检查完成后以一个 transaction 替换剩余匹配。
+  大小写单词命令使用 vendored `utf8proc` 的 Unicode simple case mapping；需要
+  多 code point 展开的 full special casing 和 locale-sensitive casing 尚未承诺。
 - POSIX 输入识别 ESC Meta、常见 CSI/SS3 方向键和 bracketed paste；Win32
   record 输入识别对应 named keys，但按平台限制不声称有 paste boundary。
 - Renderer 当前仍执行完整 CellGrid frame 输出；front/back row diff 是下一
   个纯性能步骤，不影响上述编辑和数据安全契约。
 
 当前纵切不等于“完整 GNU Emacs”。多 Window、minibuffer 候选弹窗、历史与
-模糊匹配、rectangle、完整 search/replace、keyboard macro、mode/keymap
+模糊匹配、正则 search/replace、rectangle、keyboard macro、mode/keymap
 扩展和插件仍按
 后续 Phase 分别冻结行为与实现。
 
@@ -1050,7 +1061,10 @@ point。构建程序自重建时必须保留 bootstrap 所用编译器和 C17 �
 
 ### 19.3 Command 差分
 
-为选定 GNU Emacs 正式版本建立 batch harness。每个 transcript 输出机器可比较的状态，不比较内部 Lisp object 或原始 VT bytes。
+`tests/test_transcript.c` 与 `tests/emacs_transcript.el` 已建立首批 batch harness；
+POSIX `./nob test` 在 GNU Emacs 可用时自动比较 UTF-8 text 与 point transcript。
+兼容正式版本冻结后继续扩充 fixture。每个 transcript 输出机器可比较的状态，
+不比较内部 Lisp object 或原始 VT bytes。
 
 Harness 外部使用 Emacs 的 1-based character position；适配层通过严格 UTF-8 code point scan 与内部 0-based `KmBytePos` 双向转换。禁止直接把 byte offset 与 Emacs point 数值比较。
 
