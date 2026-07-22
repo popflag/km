@@ -121,6 +121,67 @@ static int fail(const char *message)
     return 1;
 }
 
+#ifndef _WIN32
+static int test_paste_limit(void)
+{
+    static const unsigned char start[] = {0x1b, '[', '2', '0', '0', '~'};
+    static const unsigned char end[] = {0x1b, '[', '2', '0', '1', '~'};
+    static const unsigned char near_end[] = {0x1b, '[', '2', '0', '1', 'x'};
+    FILE *input = tmpfile();
+    FILE *output = tmpfile();
+    int saved_input = -1;
+    int saved_output = -1;
+    KmPlatform *platform = NULL;
+    KmEvent event;
+    char error[256] = {0};
+    int result = 1;
+    size_t i;
+
+    if (input == NULL || output == NULL ||
+        fwrite(start, 1, sizeof(start), input) != sizeof(start)) goto done;
+    for (i = 0; i < 1024u * 1024u - sizeof(near_end); ++i) {
+        if (fputc('x', input) == EOF) goto done;
+    }
+    if (fwrite(near_end, 1, sizeof(near_end), input) != sizeof(near_end) ||
+        fwrite(end, 1, sizeof(end), input) != sizeof(end) ||
+        fwrite(start, 1, sizeof(start), input) != sizeof(start)) goto done;
+    for (i = 0; i < 1024u * 1024u + 1u; ++i) {
+        if (fputc('y', input) == EOF) goto done;
+    }
+    if (fwrite(end, 1, sizeof(end), input) != sizeof(end) ||
+        fflush(input) != 0 || fseek(input, 0, SEEK_SET) != 0) goto done;
+    saved_input = dup(STDIN_FILENO);
+    saved_output = dup(STDOUT_FILENO);
+    if (saved_input < 0 || saved_output < 0 ||
+        dup2(fileno(input), STDIN_FILENO) < 0 ||
+        dup2(fileno(output), STDOUT_FILENO) < 0) goto done;
+    if (km_platform_open(&platform, error, sizeof(error)) != 0) goto done;
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_PASTE || event.text_len != 1024u * 1024u ||
+        memcmp(event.text + event.text_len - sizeof(near_end), near_end,
+               sizeof(near_end)) != 0) goto done;
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) == 0 ||
+        strstr(error, "exceeds 1 MiB") == NULL) goto done;
+    if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
+        event.kind != KM_EVENT_EOF) goto done;
+    result = 0;
+
+done:
+    km_platform_close(platform);
+    if (saved_input >= 0) {
+        (void)dup2(saved_input, STDIN_FILENO);
+        close(saved_input);
+    }
+    if (saved_output >= 0) {
+        (void)dup2(saved_output, STDOUT_FILENO);
+        close(saved_output);
+    }
+    if (input != NULL) fclose(input);
+    if (output != NULL) fclose(output);
+    return result;
+}
+#endif
+
 int main(void)
 {
     static const unsigned char input[] = {
@@ -263,5 +324,10 @@ int main(void)
         strstr(output, "\xE6\x96\x87\xE6\x9C\xAC") == NULL) {
         return fail("probe output did not contain all text samples");
     }
+#ifndef _WIN32
+    if (test_paste_limit() != 0) {
+        return fail("oversized bracketed paste was not rejected cleanly");
+    }
+#endif
     return 0;
 }

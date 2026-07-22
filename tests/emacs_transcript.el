@@ -57,3 +57,33 @@
   (goto-char 3)
   (transpose-lines 2)
   (km-emit "transpose-final-2"))
+
+(with-temp-buffer
+  (insert "ab")
+  (goto-char 1)
+  (condition-case nil (forward-char 9) (error nil))
+  (km-emit "forward-char-boundary"))
+
+(with-temp-buffer
+  (insert "a b")
+  (goto-char 1)
+  (forward-word 9)
+  (km-emit "forward-word-boundary"))
+
+(with-temp-buffer
+  (insert "a\n\nb")
+  (goto-char 1)
+  (forward-paragraph 9)
+  (km-emit "forward-paragraph-boundary"))
+
+(with-temp-buffer
+  (insert "One.  Two.")
+  (goto-char 1)
+  (condition-case nil (forward-sentence 9) (error nil))
+  (km-emit "forward-sentence-boundary"))
+
+(with-temp-buffer
+  (insert "One.  Two.")
+  (goto-char (point-max))
+  (backward-sentence 9)
+  (km-emit "backward-sentence-boundary"))

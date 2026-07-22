@@ -601,16 +601,23 @@ KmStatus km_file_load(KmPath *path, KmFile **out_file, uint8_t **out_text,
         status = fail(error, KM_ERR_IO, "open file", errno);
         goto fail;
     }
-    if (fstat(descriptor, &after) != 0 || !valid_target(&after) ||
-        before.st_dev != after.st_dev || before.st_ino != after.st_ino) {
-        status = fail(error, KM_ERR_CONFLICT, "file changed while opening", errno);
+    if (fstat(descriptor, &after) != 0) {
+        status = fail(error, KM_ERR_IO, "inspect opened file", errno);
+        goto fail;
+    }
+    if (!valid_target(&after)) {
+        status = fail(error, KM_ERR_UNSUPPORTED, "unsafe file target", 0);
+        goto fail;
+    }
+    if (before.st_dev != after.st_dev || before.st_ino != after.st_ino) {
+        status = fail(error, KM_ERR_CONFLICT, "file changed while opening", 0);
         goto fail;
     }
     status = read_all(descriptor, (size_t)after.st_size, &bytes, &len, error);
     if (status != KM_OK) goto fail;
     before_identity = identity_from_stat(&after);
     if (fstat(descriptor, &before) != 0) {
-        status = fail(error, KM_ERR_CONFLICT, "file changed while reading", errno);
+        status = fail(error, KM_ERR_IO, "inspect read file", errno);
         goto fail;
     }
     after_identity = identity_from_stat(&before);

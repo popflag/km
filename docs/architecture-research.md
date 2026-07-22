@@ -182,7 +182,7 @@ Base buffer narrow 到 `[2,5)` 后，其 indirect buffer 仍观察到完整范�
 | A06  | 采用   | 原子 splice、registered anchors、命令级 transaction             |
 | A07  | 采用   | 线性 undo journal；不做 branching tree                          |
 | A08  | 采用   | vendoring `utf8proc v2.11.3`，Unicode 17.0.0                    |
-| A09  | 采用   | CellGrid + row diff；不依赖 ncurses                             |
+| A09  | 采用   | CellGrid；当前全帧输出，row diff 作为未来性能优化；不依赖 ncurses |
 | A10  | 采用   | POSIX `termios + poll + VT`                                     |
 | A11  | 采用   | Windows VT 输出 + `ReadConsoleInputW` 结构化输入                |
 | A12  | 采用   | 同目录临时文件 + flush + replace 的同步安全保存                 |
@@ -194,7 +194,7 @@ Base buffer narrow 到 `[2,5)` 后，其 indirect buffer 仍观察到完整范�
 | A18  | 待验证 | rectangle 在 tab、组合字符和宽 EGC 边缘的逐命令 Emacs 语义      |
 | A19  | 待验证 | GNU Emacs `undo`、`undo-only`、`undo-redo` 的精确遍历与合并行为 |
 | A20  | 待验证 | Windows VT input 下 bracketed paste、鼠标、resize 和修饰键组合  |
-| A21  | 采用   | QEmacs 作为大文件/mode/TTY 参考，不改变首版 gap/transaction/CellGrid；详见 [QEmacs 专项调研](qemacs-architecture-research.md) |
+| A21  | 采用   | QEmacs 作为大文件/mode/TTY 参考，不改变首版 gap/transaction/CellGrid；固定源码资料见第 23 节 |
 
 ## 4. 总体架构
 
@@ -220,7 +220,7 @@ Editor -> Document -> Buffer(s) -> View(s)
       gap + anchors + undo       back CellGrid
                                       |
                                       v
-                              front/back row diff
+                              full-frame CellGrid output
                                       |
                                       v
                               VT output backend
@@ -632,7 +632,7 @@ typedef struct {
 } KmEgcRec;
 ```
 
-Cache key 至少包含 Document revision、tab width、width policy 和 viewport width。编辑后直接重建受影响 hard line；超长单行成为实测瓶颈后，再在已确认 EGC boundary 增加稀疏 checkpoint。
+Cache key 至少包含 Document revision、width policy 和 viewport width。当前 tabstop 固定为 8；增加配置后再将 tab width 纳入 key。编辑后直接重建受影响 hard line；超长单行成为实测瓶颈后，再在已确认 EGC boundary 增加稀疏 checkpoint。
 
 ### 10.4 Point 位于 EGC 内部
 
@@ -651,7 +651,7 @@ Cache key 至少包含 Document revision、tab width、width policy 和 viewport
 Unicode 不规定一个 EGC 在所有终端和字体中占多少 cell。Width 必须是显式 profile：
 
 ```text
-tab: tabstop - (hard_line_col % tabstop)
+tab: 8 - (hard_line_col % 8)
 ordinary EGC: max(positive utf8proc_charwidth(codepoint))
 combining-only EGC: 1，并用 dotted-circle 或 replacement glyph 显示
 contains ZWJ / VS16 / RI flag pair: 2
@@ -662,7 +662,7 @@ C0/DEL/control: 转义为 ^X、^? 或 replacement，绝不原样输出到 termin
 
 Control 的替代文本和 width 必须由同一个函数同时返回：除 tab/newline 外，C0 与 DEL 使用两格的 `^X`/`^?`；其他不可打印字符若使用 replacement glyph，则 width 等于该 glyph 的实际 layout width。不能先按原 control 的 `utf8proc_charwidth` 记 0，再输出两格文本。
 
-`tabstop` 使用 `KmCellCol`，配置入口要求 `tabstop >= 1` 并检查列加法溢出。不能把 EGC 内各 code point width 相加。该策略是产品约定，需要真实终端矩阵校准；不是 UAX #11 的直接结论。
+当前 tabstop 固定为 8，并检查列加法溢出。可配置 tabstop 是未来功能；增加时使用 `KmCellCol`、要求 `tabstop >= 1`，并覆盖大于 255 的值。不能把 EGC 内各 code point width 相加。该策略是产品约定，需要真实终端矩阵校准；不是 UAX #11 的直接结论。
 
 ### 10.6 Hard line 与 soft wrap
 
@@ -814,6 +814,7 @@ Ground -> Utf8
 - OSC 内容流式丢弃到 BEL/ST，不无限缓存。
 - ESC deadline 可配置，初始值通过本地与 SSH 实测选择。
 - Bracketed paste 识别 `CSI 200~` 和 `CSI 201~`，内部 ESC 不解释为命令。
+- 单个 bracketed paste payload 上限为 1 MiB；超限时继续消费到 `CSI 201~` 后报错，不保留截断文本。
 - 鼠标仅在明确启用时解析 SGR 1006。
 - 未知序列安全转为 unknown/escape 事件，不能执行或无限等待。
 
@@ -1057,7 +1058,7 @@ point。构建程序自重建时必须保留 bootstrap 所用编译器和 C17 �
 - 测试 combining、长 RI run、ZWJ emoji、VS15/16、CJK、ambiguous、孤立 combining、NUL、control 和 tab。
 - Width golden 同时断言 EGC、cell span、wrap、cursor mapping 和 hit-test。
 - 控制字符 golden 同时比较替代 glyph bytes 和声明 width，覆盖 `^@`、`^G`、`^?`。
-- 配置测试拒绝 `tabstop=0`，并覆盖 `tabstop=256`，确保 span width 不发生 8-bit 截断。
+- 覆盖固定 tabstop=8 的 cell span；引入配置入口时再增加 `tabstop=0` 拒绝和 `tabstop=256` 测试。
 
 ### 19.3 Command 差分
 
@@ -1136,7 +1137,7 @@ rectangle-mark-mode and C-x r commands
 
 - Visible hard-line EGC cache、width policy、CellGrid。
 - POSIX VT parser 和 Win32 input records。
-- Row diff、scroll、status/message line、bracketed paste（POSIX）。
+- Scroll、status/message line、bracketed paste（POSIX）；row diff 留作后续性能优化。
 
 退出条件：Unicode conformance、CellGrid golden、PTY/Console smoke tests 通过。
 
@@ -1220,7 +1221,6 @@ QEmacs 专项调研给出的升级指标包括：大文件 load time/RSS、`gap_
 
 ### QEmacs
 
-- [QEmacs 架构专项调研](qemacs-architecture-research.md)
 - [QEmacs 6.5.2 固定源码提交](https://github.com/qemacs/qemacs/tree/b1f189c924c36c8074b54042f70e53eb785e3010)
 - [QEmacs `Page` / `EditBuffer`](https://github.com/qemacs/qemacs/blob/b1f189c924c36c8074b54042f70e53eb785e3010/qe.h#L303-L488)
 - [QEmacs TTY row diff](https://github.com/qemacs/qemacs/blob/b1f189c924c36c8074b54042f70e53eb785e3010/tty.c#L1646-L1725)
@@ -1267,7 +1267,7 @@ UTF-8 gap Document
 -> Emacs Buffer/View semantics
 -> normalized events + command/key trie
 -> utf8proc visible-line layout
--> CellGrid row diff
+-> CellGrid full-frame output
 -> POSIX VT / Windows Console backend
 -> crash-aware synchronous save
 ```

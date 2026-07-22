@@ -1,5 +1,6 @@
 #include "layout.h"
 #include "file.h"
+#include "unicode.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,6 +23,48 @@ static void check_glyph(const KmCellGrid *grid, size_t row, size_t column,
 
     CHECK(len == expected_len);
     CHECK(memcmp(glyph, expected, len) == 0);
+}
+
+static void test_grapheme_scans_from_internal_boundaries(void)
+{
+    static const uint8_t combining[] = {'e', 0xcc, 0x81, 'x'};
+    static const uint8_t regional_indicators[] = {
+        0xf0, 0x9f, 0x87, 0xa6, 0xf0, 0x9f, 0x87, 0xa7,
+        0xf0, 0x9f, 0x87, 0xa8,
+    };
+    static const uint8_t zwj[] = {
+        0xf0, 0x9f, 0x91, 0xa9, 0xe2, 0x80, 0x8d,
+        0xf0, 0x9f, 0x92, 0xbb,
+    };
+    static const uint8_t indic[] = {
+        0xe0, 0xa4, 0x95, 0xe0, 0xa5, 0x8d, 0xe0, 0xa4, 0x95,
+    };
+    KmGrapheme grapheme;
+    KmError error = {KM_ERR_IO, 42, "stale"};
+    int32_t codepoint;
+    size_t consumed;
+
+    CHECK(km_unicode_decode((const uint8_t *)"a", 1, 0, &codepoint,
+                            &consumed, &error) == KM_OK);
+    CHECK(error.code == KM_OK && error.os_code == 0 && error.operation == NULL);
+    CHECK(km_unicode_next_grapheme(combining, sizeof(combining), 1,
+                                   &grapheme, &error) == KM_OK);
+    CHECK(grapheme.end == 3 && grapheme.width == 1 &&
+          !grapheme.combining_only);
+    CHECK(km_unicode_next_grapheme(regional_indicators,
+                                   sizeof(regional_indicators), 4,
+                                   &grapheme, &error) == KM_OK);
+    CHECK(grapheme.end == 8 && grapheme.width == 2);
+    CHECK(km_unicode_next_grapheme(zwj, sizeof(zwj), 4, &grapheme,
+                                   &error) == KM_OK);
+    CHECK(grapheme.end == sizeof(zwj) && grapheme.width == 2);
+    CHECK(km_unicode_next_grapheme(zwj, sizeof(zwj), 7, &grapheme,
+                                   &error) == KM_OK);
+    CHECK(grapheme.end == sizeof(zwj) && grapheme.width == 2);
+    CHECK(km_unicode_next_grapheme(indic, sizeof(indic), 3, &grapheme,
+                                   &error) == KM_OK);
+    CHECK(grapheme.end == sizeof(indic));
+    CHECK(error.code == KM_OK && error.os_code == 0 && error.operation == NULL);
 }
 
 static void test_unicode_and_controls(void)
@@ -426,6 +469,7 @@ static void test_move_to_window_line(void)
 
 int main(void)
 {
+    test_grapheme_scans_from_internal_boundaries();
     test_unicode_and_controls();
     test_wrap_and_viewport();
     test_unicode_file_name_status();

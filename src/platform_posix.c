@@ -13,6 +13,8 @@
 #include <termios.h>
 #include <unistd.h>
 
+#define KM_MAX_PASTE_BYTES (1024u * 1024u)
+
 struct KmPlatform {
     int interactive;
     int raw_enabled;
@@ -430,6 +432,9 @@ static int read_bracketed_paste(KmPlatform *platform, KmEvent *event,
                                 char *error, size_t error_cap)
 {
     static const uint8_t end_marker[] = {0x1b, '[', '2', '0', '1', '~'};
+    size_t matched = 0;
+    size_t total = 0;
+    bool over_limit = false;
 
     platform->paste_len = 0;
     for (;;) {
@@ -444,14 +449,11 @@ static int read_bracketed_paste(KmPlatform *platform, KmEvent *event,
             set_error(error, error_cap, "read paste: incomplete delimiter");
             return -1;
         }
-        if (platform->paste_len == (size_t)PTRDIFF_MAX) {
-            set_error(error, error_cap, "read paste: input is too large");
-            return -1;
-        }
-        if (platform->paste_len == platform->paste_cap) {
+        if (platform->paste_len < KM_MAX_PASTE_BYTES + sizeof(end_marker) &&
+            platform->paste_len == platform->paste_cap) {
             capacity = platform->paste_cap == 0 ? 256 : platform->paste_cap * 2;
-            if (capacity < platform->paste_cap || capacity > (size_t)PTRDIFF_MAX) {
-                capacity = (size_t)PTRDIFF_MAX;
+            if (capacity > KM_MAX_PASTE_BYTES + sizeof(end_marker)) {
+                capacity = KM_MAX_PASTE_BYTES + sizeof(end_marker);
             }
             paste = (uint8_t *)realloc(platform->paste, capacity);
             if (paste == NULL) {
@@ -461,11 +463,25 @@ static int read_bracketed_paste(KmPlatform *platform, KmEvent *event,
             platform->paste = paste;
             platform->paste_cap = capacity;
         }
-        platform->paste[platform->paste_len++] = byte;
-        if (platform->paste_len >= sizeof(end_marker) &&
-            memcmp(platform->paste + platform->paste_len - sizeof(end_marker),
-                   end_marker, sizeof(end_marker)) == 0) {
-            platform->paste_len -= sizeof(end_marker);
+        if (platform->paste_len < KM_MAX_PASTE_BYTES + sizeof(end_marker)) {
+            platform->paste[platform->paste_len++] = byte;
+        }
+        if (total < KM_MAX_PASTE_BYTES + sizeof(end_marker)) {
+            ++total;
+        } else {
+            over_limit = true;
+        }
+        matched = byte == end_marker[matched]
+                      ? matched + 1
+                      : (byte == end_marker[0] ? 1u : 0u);
+        if (matched == sizeof(end_marker)) {
+            size_t content_len = total - sizeof(end_marker);
+            if (over_limit || content_len > KM_MAX_PASTE_BYTES) {
+                platform->paste_len = 0;
+                set_error(error, error_cap, "read paste: input exceeds 1 MiB");
+                return -1;
+            }
+            platform->paste_len = content_len;
             memset(event, 0, sizeof(*event));
             event->kind = KM_EVENT_PASTE;
             event->repeat = 1;

@@ -135,20 +135,25 @@ static bool remove_tree(const char *path)
         find = FindFirstFileA(pattern, &data);
         free(pattern);
         if (find == INVALID_HANDLE_VALUE) {
-            nob_log(NOB_ERROR, "could not enumerate %s: Windows error %lu",
-                    path, (unsigned long)GetLastError());
-            return false;
+            DWORD code = GetLastError();
+            if (code != ERROR_FILE_NOT_FOUND) {
+                nob_log(NOB_ERROR,
+                        "could not enumerate %s: Windows error %lu",
+                        path, (unsigned long)code);
+                return false;
+            }
+        } else {
+            do {
+                char *child;
+                if (strcmp(data.cFileName, ".") == 0 ||
+                    strcmp(data.cFileName, "..") == 0) continue;
+                child = join_path(path, data.cFileName);
+                if (child == NULL || !remove_tree(child)) ok = false;
+                free(child);
+                if (!ok) break;
+            } while (FindNextFileA(find, &data));
+            FindClose(find);
         }
-        do {
-            char *child;
-            if (strcmp(data.cFileName, ".") == 0 ||
-                strcmp(data.cFileName, "..") == 0) continue;
-            child = join_path(path, data.cFileName);
-            if (child == NULL || !remove_tree(child)) ok = false;
-            free(child);
-            if (!ok) break;
-        } while (FindNextFileA(find, &data));
-        FindClose(find);
         if (!ok) return false;
     }
     if (!RemoveDirectoryA(path)) {

@@ -725,9 +725,13 @@ KmStatus km_file_load(KmPath *path, KmFile **out_file, uint8_t **out_text,
         status = fail(error, KM_ERR_IO, "open file", code);
         goto failed;
     }
-    if (!GetFileInformationByHandle(handle, &before) || !valid_target(&before)) {
+    if (!GetFileInformationByHandle(handle, &before)) {
         DWORD code = GetLastError();
-        status = fail(error, KM_ERR_UNSUPPORTED, "unsafe file target", code);
+        status = fail(error, KM_ERR_IO, "inspect opened file", code);
+        goto failed;
+    }
+    if (!valid_target(&before)) {
+        status = fail(error, KM_ERR_UNSUPPORTED, "unsafe file target", 0);
         goto failed;
     }
     size.HighPart = before.nFileSizeHigh;
@@ -738,8 +742,11 @@ KmStatus km_file_load(KmPath *path, KmFile **out_file, uint8_t **out_text,
     }
     status = read_all(handle, (size_t)size.QuadPart, &bytes, &len, error);
     if (status != KM_OK) goto failed;
-    if (!GetFileInformationByHandle(handle, &after) ||
-        !same_identity(&(KmFileIdentity){before.dwVolumeSerialNumber,
+    if (!GetFileInformationByHandle(handle, &after)) {
+        status = fail(error, KM_ERR_IO, "inspect read file", GetLastError());
+        goto failed;
+    }
+    if (!same_identity(&(KmFileIdentity){before.dwVolumeSerialNumber,
                                         before.nFileIndexHigh,
                                         before.nFileIndexLow,
                                         before.ftLastWriteTime,
@@ -755,8 +762,7 @@ KmStatus km_file_load(KmPath *path, KmFile **out_file, uint8_t **out_text,
                                         after.nFileSizeLow,
                                         after.nNumberOfLinks,
                                         after.dwFileAttributes})) {
-        status = fail(error, KM_ERR_CONFLICT, "file changed while reading",
-                      GetLastError());
+        status = fail(error, KM_ERR_CONFLICT, "file changed while reading", 0);
         goto failed;
     }
     if (!CloseHandle(handle)) {

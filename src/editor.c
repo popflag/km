@@ -368,6 +368,7 @@ static uint64_t command_magnitude(int64_t argument)
 static KmStatus move_chars(KmView *view, int64_t argument, KmError *error)
 {
     KmBytePos point;
+    KmBytePos original;
     KmBytePos start;
     KmBytePos end;
     KmBytePos next;
@@ -376,18 +377,21 @@ static KmStatus move_chars(KmView *view, int64_t argument, KmError *error)
     KmStatus status = validate_view(view, false, &point, &start, &end, error);
 
     if (status != KM_OK) return status;
+    original = point;
     while (remaining != 0) {
         status = adjacent_boundary(view->buffer->document, point, start, end,
                                    backward, &next);
-        if (status != KM_OK) {
-            return fail(error, status, "move characters");
-        }
+        if (status != KM_OK) break;
         point = next;
         --remaining;
     }
-    status = km_anchor_set(view->point, point, error);
-    if (status == KM_OK) view->preferred_column_set = false;
-    return status;
+    if (point.v != original.v) {
+        KmStatus set_status = km_anchor_set(view->point, point, error);
+        if (set_status != KM_OK) return set_status;
+        view->preferred_column_set = false;
+    }
+    return status == KM_OK ? KM_OK
+                           : fail(error, status, "move characters");
 }
 
 static KmStatus copy_accessible_text(KmBuffer *buffer, uint8_t **out_text,
@@ -436,7 +440,8 @@ static size_t previous_codepoint_start(const uint8_t *text, size_t position)
 }
 
 static KmStatus scan_words(const uint8_t *text, size_t len, size_t position,
-                           int64_t argument, size_t *out_position,
+                           int64_t argument, bool clamp,
+                           size_t *out_position,
                            KmError *error)
 {
     uint64_t remaining = command_magnitude(argument);
@@ -461,7 +466,11 @@ static KmStatus scan_words(const uint8_t *text, size_t len, size_t position,
                 position = previous;
             }
             if (!found) {
-                return fail(error, KM_ERR_INVALID, "scan words");
+                if (!clamp) {
+                    return fail(error, KM_ERR_INVALID, "scan words");
+                }
+                position = 0;
+                break;
             }
             while (position != 0) {
                 int32_t codepoint;
@@ -487,7 +496,11 @@ static KmStatus scan_words(const uint8_t *text, size_t len, size_t position,
                 position += consumed;
             }
             if (!found) {
-                return fail(error, KM_ERR_INVALID, "scan words");
+                if (!clamp) {
+                    return fail(error, KM_ERR_INVALID, "scan words");
+                }
+                position = len;
+                break;
             }
             while (position < len) {
                 int32_t codepoint;
@@ -522,7 +535,7 @@ static KmStatus move_words(KmView *view, int64_t argument, KmError *error)
     status = copy_accessible_text(view->buffer, &text, &len, &position, view,
                                   error);
     if (status != KM_OK) return status;
-    status = scan_words(text, len, position, argument, &position, error);
+    status = scan_words(text, len, position, argument, true, &position, error);
     if (status == KM_OK) {
         status = km_anchor_set(view->point,
                                (KmBytePos){start.v + position}, error);
@@ -656,12 +669,24 @@ static KmStatus move_sentences(KmView *view, int64_t argument,
                                               error)
                      : scan_sentence_forward(text, len, position, &position,
                                              error);
-        if (status != KM_OK) goto done;
+        if (status != KM_OK) break;
     }
-    status = km_anchor_set(view->point, (KmBytePos){start.v + position}, error);
-    if (status == KM_OK) view->preferred_column_set = false;
+    {
+        KmStatus set_status = km_anchor_set(
+            view->point, (KmBytePos){start.v + position}, error);
+        if (set_status != KM_OK) {
+            free(text);
+            return set_status;
+        }
+        view->preferred_column_set = false;
+    }
+    if (status != KM_OK && backward) {
+        km_error_clear(error);
+        status = KM_OK;
+    } else if (status != KM_OK) {
+        status = fail(error, status, "scan sentences");
+    }
 
-done:
     free(text);
     return status;
 }
@@ -832,17 +857,12 @@ static KmStatus move_paragraphs(KmView *view, int64_t argument,
         size_t next = backward
                           ? backward_paragraph_once(text, len, position)
                           : forward_paragraph_once(text, len, position);
-        if (next == position) {
-            status = fail(error, KM_ERR_INVALID,
-                          backward ? "beginning of buffer" : "end of buffer");
-            goto done;
-        }
+        if (next == position) break;
         position = next;
     }
     status = km_anchor_set(view->point, (KmBytePos){start.v + position}, error);
     if (status == KM_OK) view->preferred_column_set = false;
 
-done:
     free(text);
     return status;
 }
@@ -1848,7 +1868,7 @@ static KmStatus kill_words(KmCommandLoop *loop, KmView *view,
     status = copy_accessible_text(view->buffer, &text, &len, &position, view,
                                   error);
     if (status != KM_OK) return status;
-    status = scan_words(text, len, position, argument, &target, error);
+    status = scan_words(text, len, position, argument, true, &target, error);
     if (status != KM_OK) goto done;
     kill_start = target < position ? target : position;
     kill_end = target < position ? position : target;
@@ -2121,24 +2141,26 @@ static KmStatus transpose_words(KmView *view, int64_t argument,
     status = copy_accessible_text(view->buffer, &text, &len, &position, view,
                                   error);
     if (status != KM_OK) return status;
-    status = scan_words(text, len, position, -1, &first_start, error);
+    status = scan_words(text, len, position, -1, false, &first_start, error);
     if (status != KM_OK && argument > 0) {
-        status = scan_words(text, len, position, 1, &first_end, error);
+        status = scan_words(text, len, position, 1, false, &first_end, error);
         if (status == KM_OK) {
-            status = scan_words(text, len, first_end, -1, &first_start,
+            status = scan_words(text, len, first_end, -1, false, &first_start,
                                 error);
         }
     }
     if (status != KM_OK) goto done;
-    status = scan_words(text, len, first_start, 1, &first_end, error);
+    status = scan_words(text, len, first_start, 1, false, &first_end, error);
     if (status != KM_OK) goto done;
     if (argument > 0) {
-        status = scan_words(text, len, first_end, 1, &second_end, error);
+        status = scan_words(text, len, first_end, 1, false, &second_end, error);
         if (status != KM_OK) goto done;
-        status = scan_words(text, len, second_end, -1, &second_start, error);
+        status = scan_words(text, len, second_end, -1, false, &second_start,
+                            error);
         if (status != KM_OK) goto done;
         if (argument > 1) {
-            status = scan_words(text, len, first_end, argument, &second_end,
+            status = scan_words(text, len, first_end, argument, false,
+                                &second_end,
                                 error);
             if (status != KM_OK) goto done;
         }
@@ -2156,10 +2178,12 @@ static KmStatus transpose_words(KmView *view, int64_t argument,
                text + first_start, first_len);
         final_position = second_end;
     } else {
-        status = scan_words(text, len, first_start, argument, &second_start,
+        status = scan_words(text, len, first_start, argument, false,
+                            &second_start,
                             error);
         if (status != KM_OK) goto done;
-        status = scan_words(text, len, second_start, -argument, &second_end,
+        status = scan_words(text, len, second_start, -argument, false,
+                            &second_end,
                             error);
         if (status != KM_OK) goto done;
         middle_len = first_start - second_end;
@@ -2225,7 +2249,7 @@ static KmStatus transform_words(KmView *view, int64_t argument,
     status = copy_accessible_text(view->buffer, &text, &len, &position, view,
                                   error);
     if (status != KM_OK) return status;
-    status = scan_words(text, len, position, argument, &target, error);
+    status = scan_words(text, len, position, argument, true, &target, error);
     if (status != KM_OK) goto done;
     range_start = target < position ? target : position;
     range_end = target < position ? position : target;
@@ -2974,7 +2998,7 @@ static KmStatus command_mark_word(KmCommandLoop *loop, KmView *view,
     status = copy_accessible_text(view->buffer, &text, &len, &position, view,
                                   error);
     if (status != KM_OK) return status;
-    status = scan_words(text, len, position, argument, &position, error);
+    status = scan_words(text, len, position, argument, true, &position, error);
     if (status == KM_OK) {
         status = prepare_mark(view->buffer,
                               (KmBytePos){start.v + position}, &plan, error);

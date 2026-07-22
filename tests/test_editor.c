@@ -331,8 +331,8 @@ static void test_word_commands(void)
     CHECK(km_view_point(view).v == 9);
     CHECK(km_view_forward_word(view, &error) == KM_OK);
     CHECK(km_view_point(view).v == 16);
-    CHECK(km_view_forward_word(view, &error) == KM_ERR_INVALID);
-    CHECK(km_view_point(view).v == 16);
+    CHECK(km_view_forward_word(view, &error) == KM_OK);
+    CHECK(km_view_point(view).v == sizeof(text));
     CHECK(km_view_backward_word(view, &error) == KM_OK);
     CHECK(km_view_point(view).v == 10);
     CHECK(km_view_backward_word(view, &error) == KM_OK);
@@ -344,7 +344,7 @@ static void test_word_commands(void)
     CHECK(km_view_point(view).v == 9);
     CHECK(km_view_forward_word(view, &error) == KM_OK);
     CHECK(km_view_point(view).v == 16);
-    CHECK(km_view_forward_word(view, &error) == KM_ERR_INVALID);
+    CHECK(km_view_forward_word(view, &error) == KM_OK);
     CHECK(km_view_point(view).v == 16);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
@@ -423,8 +423,8 @@ static void test_paragraph_and_common_edit_commands(void)
           KM_OK);
     CHECK(km_view_point(view).v == 0);
     CHECK(dispatch_key(loop, view, '4', KM_MOD_ALT, &error) == KM_OK);
-    CHECK(dispatch_key(loop, view, '}', KM_MOD_ALT, &error) == KM_ERR_INVALID);
-    CHECK(km_view_point(view).v == 0);
+    CHECK(dispatch_key(loop, view, '}', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == sizeof(paragraphs) - 1);
     km_command_loop_destroy(loop);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
@@ -1077,9 +1077,9 @@ static void test_command_loop_events_and_trie(void)
     CHECK(km_command_loop_create(&loop, &error) == KM_OK);
     CHECK(km_command_loop_last_command(loop) == KM_COMMAND_NONE);
     CHECK(dispatch_key(loop, view, '2', KM_MOD_ALT, &error) == KM_OK);
-    CHECK(dispatch_key(loop, view, 'f', KM_MOD_ALT, &error) == KM_ERR_INVALID);
-    CHECK(km_view_point(view).v == 0);
-    CHECK(km_command_loop_last_command(loop) == KM_COMMAND_NONE);
+    CHECK(dispatch_key(loop, view, 'f', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 2);
+    CHECK(km_command_loop_last_command(loop) == KM_COMMAND_FORWARD_WORD);
     CHECK(dispatch_key(loop, view, 'f', KM_MOD_ALT, &error) == KM_OK);
     CHECK(km_view_point(view).v == 2);
     CHECK(km_command_loop_last_command(loop) == KM_COMMAND_FORWARD_WORD);
@@ -1206,6 +1206,10 @@ static void test_command_loop_prefix_arguments(void)
     CHECK(dispatch_key(loop, view, 'u', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_key(loop, view, 'f', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(km_view_point(view).v == 16);
+    CHECK(dispatch_key(loop, view, '9', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'f', KM_MOD_CTRL, &error) == KM_ERR_INVALID);
+    CHECK(km_view_point(view).v == sizeof(initial) - 1);
+    CHECK(km_view_set_point(view, (KmBytePos){16}, &error) == KM_OK);
     CHECK(dispatch_key(loop, view, 'u', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_ignored(loop, view, KM_EVENT_RESIZE, &error) == KM_OK);
     CHECK(dispatch_key(loop, view, '3', 0, &error) == KM_OK);
@@ -1265,6 +1269,40 @@ static void test_command_loop_prefix_arguments(void)
     CHECK(dispatch_key(loop, view, 'q', 0, &error) == KM_ERR_INVALID);
     CHECK(dispatch_key(loop, view, 'f', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(km_view_point(view).v == 14);
+
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+}
+
+static void test_counted_movement_boundaries(void)
+{
+    static const uint8_t text[] = "One.  Two.\n\nThree";
+    KmBuffer *buffer = make_base(text, sizeof(text) - 1);
+    KmView *view = NULL;
+    KmCommandLoop *loop = NULL;
+    KmError error;
+
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+
+    CHECK(dispatch_key(loop, view, '9', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'f', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == sizeof(text) - 1);
+
+    CHECK(km_view_set_point(view, (KmBytePos){0}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '9', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '}', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == sizeof(text) - 1);
+
+    CHECK(km_view_set_point(view, (KmBytePos){0}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '9', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'e', KM_MOD_ALT, &error) == KM_ERR_INVALID);
+    CHECK(km_view_point(view).v == sizeof(text) - 1);
+
+    CHECK(dispatch_key(loop, view, '9', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'a', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 0);
 
     km_command_loop_destroy(loop);
     CHECK(km_view_destroy(view, &error) == KM_OK);
@@ -2087,6 +2125,7 @@ int main(void)
     test_undo_redo_respect_narrowing();
     test_command_loop_events_and_trie();
     test_command_loop_prefix_arguments();
+    test_counted_movement_boundaries();
     test_command_loop_atomic_edits();
     test_lines_mark_kill_and_yank();
     test_incremental_search();

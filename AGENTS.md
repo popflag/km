@@ -2,14 +2,14 @@
 
 ## Project Status
 
-This repository contains architecture research and the Phase 0/1 foundation
-for a native, Emacs-compatible terminal editor. The current implementation
-includes the headless Document core and terminal platform probes.
+This repository contains a runnable native, Emacs-compatible terminal editor.
+The current implementation includes the Document core, Buffer/View command
+layer, Unicode layout and rendering, safe file I/O, and POSIX/Windows terminal
+backends.
 
 Read these documents before making architectural or implementation changes:
 
 - `docs/architecture-research.md` - primary design baseline
-- `docs/qemacs-architecture-research.md` - QEmacs comparison and reference
 
 ## Technical Baseline
 

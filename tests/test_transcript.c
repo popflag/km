@@ -94,6 +94,21 @@ static int run_case(const char *name, const uint8_t *text, size_t len,
         CHECK(key(loop, view, '3', KM_MOD_ALT, &error) == KM_OK);
         CHECK(key(loop, view, 'g', KM_MOD_ALT, &error) == KM_OK);
         CHECK(key(loop, view, 'c', 0, &error) == KM_OK);
+    } else if (scenario == 8) {
+        CHECK(key(loop, view, '9', KM_MOD_ALT, &error) == KM_OK);
+        CHECK(key(loop, view, 'f', KM_MOD_CTRL, &error) == KM_ERR_INVALID);
+    } else if (scenario == 9) {
+        CHECK(key(loop, view, '9', KM_MOD_ALT, &error) == KM_OK);
+        CHECK(key(loop, view, 'f', KM_MOD_ALT, &error) == KM_OK);
+    } else if (scenario == 10) {
+        CHECK(key(loop, view, '9', KM_MOD_ALT, &error) == KM_OK);
+        CHECK(key(loop, view, '}', KM_MOD_ALT, &error) == KM_OK);
+    } else if (scenario == 11) {
+        CHECK(key(loop, view, '9', KM_MOD_ALT, &error) == KM_OK);
+        CHECK(key(loop, view, 'e', KM_MOD_ALT, &error) == KM_ERR_INVALID);
+    } else if (scenario == 12) {
+        CHECK(key(loop, view, '9', KM_MOD_ALT, &error) == KM_OK);
+        CHECK(key(loop, view, 'a', KM_MOD_ALT, &error) == KM_OK);
     } else {
         if (scenario == 7) {
             CHECK(key(loop, view, '2', KM_MOD_ALT, &error) == KM_OK);
@@ -128,6 +143,18 @@ int main(void)
             0 ||
         run_case("transpose-final-2", (const uint8_t *)"a\nb", 3, 2, 7) !=
             0) {
+        return 1;
+    }
+    if (run_case("forward-char-boundary", (const uint8_t *)"ab", 2, 0, 8) !=
+            0 ||
+        run_case("forward-word-boundary", (const uint8_t *)"a b", 3, 0, 9) !=
+            0 ||
+        run_case("forward-paragraph-boundary", (const uint8_t *)"a\n\nb", 4,
+                 0, 10) != 0 ||
+        run_case("forward-sentence-boundary",
+                 (const uint8_t *)"One.  Two.", 10, 0, 11) != 0 ||
+        run_case("backward-sentence-boundary",
+                 (const uint8_t *)"One.  Two.", 10, 10, 12) != 0) {
         return 1;
     }
     return 0;
