@@ -1674,6 +1674,8 @@ static void test_minibuffer_requests(void)
 {
     static const uint8_t cjk[] = {0xe4, 0xb8, 0xad};
     static const uint8_t invalid[] = {0xc0, 0x80};
+    static const char *const empty_file_matches[] = {"alpha", "beta"};
+    static const char *const empty_buffer_matches[] = {"*scratch*", "notes"};
     static const char *const buffer_matches[] = {"*scratch*"};
     static const char *const directory_match[] = {"/tmp/sub/"};
     static const KmKeyStroke alt_h[] = {{'h', KM_MOD_ALT}};
@@ -1694,6 +1696,34 @@ static void test_minibuffer_requests(void)
     CHECK(km_command_loop_prompt_active(loop));
     km_command_loop_format_completions(loop, prompt, sizeof(prompt));
     CHECK(prompt[0] == '\0');
+    km_command_loop_clear_request(loop);
+    CHECK(km_command_loop_set_completions(loop, empty_file_matches, 2, "",
+                                          &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, KM_KEY_TAB, 0, &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(strcmp(prompt, " {alpha | beta}") == 0);
+    CHECK(dispatch_text(loop, view, 'a', 1, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 0x7f, 0, &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(prompt[0] == '\0');
+    km_command_loop_clear_request(loop);
+    CHECK(km_command_loop_set_completions(loop, empty_file_matches, 2, "",
+                                          &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, KM_KEY_TAB, 0, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'h', KM_MOD_ALT, &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(prompt[0] == '\0');
+    km_command_loop_clear_request(loop);
+    CHECK(km_command_loop_set_completions(loop, empty_file_matches, 2, "",
+                                          &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, KM_KEY_TAB, 0, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'g', KM_MOD_CTRL, &error) == KM_OK);
+    km_command_loop_clear_quit(loop);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'f', KM_MOD_CTRL, &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(prompt[0] == '\0');
+    km_command_loop_clear_request(loop);
     CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
     CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_FIND_FILE);
     CHECK(km_command_loop_request_text(loop)[0] == '\0');
@@ -1722,10 +1752,13 @@ static void test_minibuffer_requests(void)
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_key(loop, view, 'b', 0, &error) == KM_OK);
     km_command_loop_clear_request(loop);
-    CHECK(km_command_loop_set_completions(loop, buffer_matches, 1,
-                                          "*scratch*", &error) == KM_OK);
+    CHECK(km_command_loop_set_completions(loop, empty_buffer_matches, 2, "",
+                                          &error) == KM_OK);
     km_command_loop_format_completions(loop, prompt, sizeof(prompt));
     CHECK(prompt[0] == '\0');
+    CHECK(dispatch_key(loop, view, KM_KEY_TAB, 0, &error) == KM_OK);
+    km_command_loop_format_completions(loop, prompt, sizeof(prompt));
+    CHECK(strcmp(prompt, " {*scratch* | notes}") == 0);
     CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
     CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_SWITCH_BUFFER);
     CHECK(km_command_loop_request_text(loop)[0] == '\0');

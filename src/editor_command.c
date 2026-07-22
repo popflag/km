@@ -75,6 +75,7 @@ struct KmCommandLoop {
     size_t completion_count;
     size_t completion_index;
     char *completion_common;
+    bool completion_explicit;
     KmKillEntry *kill_ring;
     size_t kill_count;
     KmBuffer *yank_buffer;
@@ -2326,6 +2327,7 @@ static KmStatus begin_prompt(KmCommandLoop *loop, KmPromptKind kind,
     loop->prompt_page_opposite = false;
     loop->prompt_len = 0;
     if (loop->prompt_text != NULL) loop->prompt_text[0] = '\0';
+    loop->completion_explicit = false;
     return KM_OK;
 }
 
@@ -2607,6 +2609,7 @@ static void cycle_completion(KmCommandLoop *loop, bool forward)
 
 static KmStatus fido_backspace(KmCommandLoop *loop, KmError *error)
 {
+    loop->completion_explicit = false;
     if (loop->prompt_kind == KM_PROMPT_FIND_FILE &&
         prompt_ends_in_separator(loop) &&
         !(loop->prompt_len == 1 ||
@@ -2963,6 +2966,7 @@ static KmStatus dispatch_minibuffer_text(KmCommandLoop *loop,
         loop->prompt_kind == KM_PROMPT_CONFIRM_EXIT) {
         return fail(error, KM_ERR_INVALID, "confirmation key");
     }
+    loop->completion_explicit = false;
     if (event->kind == KM_EVENT_PASTE) {
         KmStatus status =
             append_prompt_text(loop, event->text, event->text_len, error);
@@ -3359,6 +3363,7 @@ static KmStatus command_minibuffer_clear(KmCommandLoop *loop, KmView *view,
     (void)argument;
     loop->prompt_len = 0;
     if (loop->prompt_text != NULL) loop->prompt_text[0] = '\0';
+    loop->completion_explicit = false;
     return refresh_prompt_completions(loop, error);
 }
 
@@ -3389,6 +3394,7 @@ static KmStatus command_minibuffer_complete(KmCommandLoop *loop, KmView *view,
 {
     (void)view;
     (void)argument;
+    loop->completion_explicit = true;
     return complete_prompt(loop, error);
 }
 
@@ -4016,6 +4022,7 @@ KmStatus km_command_loop_set_prompt_text(KmCommandLoop *loop,
         return fail(error, KM_ERR_INVALID, "set minibuffer text");
     }
     status = replace_prompt_text(loop, text, error);
+    loop->completion_explicit = false;
     return status == KM_OK ? refresh_prompt_completions(loop, error) : status;
 }
 
@@ -4187,7 +4194,7 @@ void km_command_loop_format_completions(const KmCommandLoop *loop,
          loop->prompt_kind != KM_PROMPT_COMMAND)) {
         return;
     }
-    if (loop->prompt_len == 0) return;
+    if (loop->prompt_len == 0 && !loop->completion_explicit) return;
     if (loop->completion_count == 0) {
         append_completion_display(destination, capacity, &used,
                                   " [No matches]");
@@ -4195,8 +4202,9 @@ void km_command_loop_format_completions(const KmCommandLoop *loop,
     }
     if (loop->completion_common != NULL &&
         strlen(loop->completion_common) > loop->prompt_len &&
-        memcmp(loop->completion_common, loop->prompt_text,
-               loop->prompt_len) == 0) {
+        (loop->prompt_len == 0 ||
+         memcmp(loop->completion_common, loop->prompt_text,
+                loop->prompt_len) == 0)) {
         append_completion_display(destination, capacity, &used, " [");
         append_completion_display(destination, capacity, &used,
                                   loop->completion_common + loop->prompt_len);
