@@ -33,6 +33,7 @@ struct KmBuffer {
     char *name;
     bool read_only;
     bool mark_active;
+    bool line_numbers_visible;
 };
 
 typedef enum {
@@ -876,6 +877,7 @@ KmStatus km_buffer_create_base(const uint8_t *text, size_t len,
         return fail(error, KM_ERR_OOM, "buffer create");
     }
     buffer->document = document;
+    buffer->line_numbers_visible = true;
     buffer->name = copy_name("*scratch*");
     if (buffer->name == NULL) {
         km_document_destroy(document);
@@ -913,6 +915,7 @@ KmStatus km_buffer_create_indirect(KmBuffer *base, KmBuffer **out_buffer,
     if (buffer == NULL) return fail(error, KM_ERR_OOM, "indirect buffer create");
     buffer->document = base->document;
     buffer->base = base;
+    buffer->line_numbers_visible = base->line_numbers_visible;
     status = create_buffer_anchors(buffer, error);
     if (status != KM_OK) {
         free(buffer);
@@ -1092,6 +1095,16 @@ KmBytePos km_buffer_mark(const KmBuffer *buffer)
     return buffer == NULL ? (KmBytePos){0} : km_anchor_get(buffer->mark);
 }
 
+bool km_buffer_line_numbers_visible(const KmBuffer *buffer)
+{
+    return buffer != NULL && buffer->line_numbers_visible;
+}
+
+void km_buffer_set_line_numbers_visible(KmBuffer *buffer, bool visible)
+{
+    if (buffer != NULL) buffer->line_numbers_visible = visible;
+}
+
 KmStatus km_view_create(KmBuffer *buffer, KmView **out_view, KmError *error)
 {
     KmView *view;
@@ -1247,6 +1260,29 @@ KmStatus km_view_end_of_line(KmView *view, KmError *error)
     return move_line_edge(view, true, error);
 }
 
+static KmStatus move_buffer_edge(KmView *view, bool to_end, KmError *error)
+{
+    KmBytePos point;
+    KmBytePos start;
+    KmBytePos end;
+    KmStatus status = validate_view(view, false, &point, &start, &end, error);
+
+    if (status != KM_OK) return status;
+    status = km_anchor_set(view->point, to_end ? end : start, error);
+    if (status == KM_OK) view->preferred_column_set = false;
+    return status;
+}
+
+KmStatus km_view_beginning_of_buffer(KmView *view, KmError *error)
+{
+    return move_buffer_edge(view, false, error);
+}
+
+KmStatus km_view_end_of_buffer(KmView *view, KmError *error)
+{
+    return move_buffer_edge(view, true, error);
+}
+
 KmStatus km_view_next_line(KmView *view, KmError *error)
 {
     return move_vertical(view, 1, error);
@@ -1367,6 +1403,30 @@ static KmStatus command_end_of_line(KmCommandLoop *loop, KmView *view,
 {
     (void)loop;
     return command_line_edge(view, argument, true, error);
+}
+
+static KmStatus command_buffer_edge(KmCommandLoop *loop, KmView *view,
+                                    bool to_end, KmError *error)
+{
+    /* ponytail: Numeric tenths need raw prefix and inactive-mark support. */
+    if (loop->command_has_argument) {
+        return fail(error, KM_ERR_INVALID, "buffer edge argument");
+    }
+    return move_buffer_edge(view, to_end, error);
+}
+
+static KmStatus command_beginning_of_buffer(KmCommandLoop *loop, KmView *view,
+                                            int64_t argument, KmError *error)
+{
+    (void)argument;
+    return command_buffer_edge(loop, view, false, error);
+}
+
+static KmStatus command_end_of_buffer(KmCommandLoop *loop, KmView *view,
+                                      int64_t argument, KmError *error)
+{
+    (void)argument;
+    return command_buffer_edge(loop, view, true, error);
 }
 
 static KmStatus command_next_line(KmCommandLoop *loop, KmView *view,
@@ -1606,6 +1666,22 @@ static KmStatus command_scroll_down(KmCommandLoop *loop, KmView *view,
                           error);
 }
 
+static KmStatus command_display_line_numbers_mode(
+    KmCommandLoop *loop, KmView *view, int64_t argument, KmError *error)
+{
+    KmBuffer *buffer = km_view_buffer(view);
+
+    if (loop == NULL || buffer == NULL) {
+        return fail(error, KM_ERR_INVALID, "display line numbers");
+    }
+    km_buffer_set_line_numbers_visible(
+        buffer, loop->command_has_argument
+                    ? argument > 0
+                    : !km_buffer_line_numbers_visible(buffer));
+    km_error_clear(error);
+    return KM_OK;
+}
+
 static KmStatus command_universal_argument(KmCommandLoop *loop, KmView *view,
                                            int64_t argument, KmError *error);
 static KmStatus command_request_exit(KmCommandLoop *loop, KmView *view,
@@ -1688,6 +1764,11 @@ static const KmCommandSpec command_registry[] = {
      KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
     {KM_COMMAND_END_OF_LINE, "end-of-line", command_end_of_line,
      KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_BEGINNING_OF_BUFFER, "beginning-of-buffer",
+     command_beginning_of_buffer, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+     KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_END_OF_BUFFER, "end-of-buffer", command_end_of_buffer,
+     KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
     {KM_COMMAND_NEXT_LINE, "next-line", command_next_line,
      KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
     {KM_COMMAND_PREVIOUS_LINE, "previous-line", command_previous_line,
@@ -1713,6 +1794,9 @@ static const KmCommandSpec command_registry[] = {
      KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
     {KM_COMMAND_SCROLL_DOWN, "scroll-down-command", command_scroll_down,
      KM_CONTEXT(KM_KEYMAP_GLOBAL), KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
+    {KM_COMMAND_DISPLAY_LINE_NUMBERS_MODE, "display-line-numbers-mode",
+     command_display_line_numbers_mode, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+     KM_COMMAND_MX | KM_COMMAND_RECORD_LAST},
     {KM_INTERNAL_UNIVERSAL_ARGUMENT, "universal-argument",
      command_universal_argument, KM_CONTEXT(KM_KEYMAP_GLOBAL),
      KM_COMMAND_KEEP_PREFIX},
@@ -2995,6 +3079,12 @@ static const KmDefaultBinding default_bindings[] = {
     KM_BIND1(KM_KEYMAP_GLOBAL, KM_KEY_HOME, 0, "beginning-of-line"),
     KM_BIND1(KM_KEYMAP_GLOBAL, KM_KEY_END, 0, "end-of-line"),
     KM_BIND1(KM_KEYMAP_GLOBAL, KM_KEY_DELETE, 0, "delete-char"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, '<', KM_MOD_ALT, "beginning-of-buffer"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, '<', KM_MOD_ALT | KM_MOD_SHIFT,
+             "beginning-of-buffer"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, '>', KM_MOD_ALT, "end-of-buffer"),
+    KM_BIND1(KM_KEYMAP_GLOBAL, '>', KM_MOD_ALT | KM_MOD_SHIFT,
+             "end-of-buffer"),
     KM_BIND1(KM_KEYMAP_GLOBAL, 'b', KM_MOD_ALT, "backward-word"),
     KM_BIND1(KM_KEYMAP_GLOBAL, 'f', KM_MOD_ALT, "forward-word"),
     KM_BIND1(KM_KEYMAP_GLOBAL, 'm', KM_MOD_ALT, "back-to-indentation"),

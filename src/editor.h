@@ -52,6 +52,8 @@ typedef enum {
     KM_COMMAND_BEGINNING_OF_LINE,
     KM_COMMAND_BACK_TO_INDENTATION,
     KM_COMMAND_END_OF_LINE,
+    KM_COMMAND_BEGINNING_OF_BUFFER,
+    KM_COMMAND_END_OF_BUFFER,
     KM_COMMAND_NEXT_LINE,
     KM_COMMAND_PREVIOUS_LINE,
     KM_COMMAND_SET_MARK,
@@ -65,7 +67,8 @@ typedef enum {
     KM_COMMAND_UNDO,
     KM_COMMAND_REDO,
     KM_COMMAND_SCROLL_UP,
-    KM_COMMAND_SCROLL_DOWN
+    KM_COMMAND_SCROLL_DOWN,
+    KM_COMMAND_DISPLAY_LINE_NUMBERS_MODE
 } KmCommandId;
 
 KmStatus km_buffer_create_base(const uint8_t *text, size_t len,
@@ -94,6 +97,8 @@ KmStatus km_buffer_set_name(KmBuffer *buffer, const char *name,
 bool km_buffer_visits_same_file(const KmBuffer *left, const KmBuffer *right);
 bool km_buffer_mark_active(const KmBuffer *buffer);
 KmBytePos km_buffer_mark(const KmBuffer *buffer);
+bool km_buffer_line_numbers_visible(const KmBuffer *buffer);
+void km_buffer_set_line_numbers_visible(KmBuffer *buffer, bool visible);
 
 KmStatus km_view_create(KmBuffer *buffer, KmView **out_view, KmError *error);
 KmStatus km_view_destroy(KmView *view, KmError *error);
@@ -112,6 +117,8 @@ KmStatus km_view_delete_char(KmView *view, KmError *error);
 KmStatus km_view_delete_backward_char(KmView *view, KmError *error);
 KmStatus km_view_beginning_of_line(KmView *view, KmError *error);
 KmStatus km_view_end_of_line(KmView *view, KmError *error);
+KmStatus km_view_beginning_of_buffer(KmView *view, KmError *error);
+KmStatus km_view_end_of_buffer(KmView *view, KmError *error);
 KmStatus km_view_next_line(KmView *view, KmError *error);
 KmStatus km_view_previous_line(KmView *view, KmError *error);
 KmStatus km_view_undo(KmView *view, KmError *error);

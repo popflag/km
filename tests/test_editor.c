@@ -344,6 +344,46 @@ static void test_word_commands(void)
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
 }
 
+static void test_buffer_edge_commands(void)
+{
+    static const uint8_t text[] = "abc\ndef";
+    KmBuffer *buffer = make_base(text, sizeof(text) - 1);
+    KmView *view = NULL;
+    KmCommandLoop *loop = NULL;
+    KmError error;
+
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){3}, &error) == KM_OK);
+    CHECK(km_view_end_of_buffer(view, &error) == KM_OK);
+    CHECK(km_view_point(view).v == sizeof(text) - 1);
+    CHECK(km_view_beginning_of_buffer(view, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 0);
+
+    CHECK(km_buffer_narrow(buffer, (KmBytePos){1}, (KmBytePos){6}, &error) ==
+          KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){3}, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '>', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 6);
+    CHECK(km_command_loop_last_command(loop) == KM_COMMAND_END_OF_BUFFER);
+    CHECK(dispatch_key(loop, view, '<', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 1);
+    CHECK(km_command_loop_last_command(loop) == KM_COMMAND_BEGINNING_OF_BUFFER);
+    CHECK(dispatch_key(loop, view, '>', KM_MOD_ALT | KM_MOD_SHIFT, &error) ==
+          KM_OK);
+    CHECK(km_view_point(view).v == 6);
+    CHECK(dispatch_key(loop, view, '<', KM_MOD_ALT | KM_MOD_SHIFT, &error) ==
+          KM_OK);
+    CHECK(km_view_point(view).v == 1);
+
+    CHECK(dispatch_key(loop, view, '2', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '>', KM_MOD_ALT, &error) == KM_ERR_INVALID);
+    CHECK(km_view_point(view).v == 1);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+}
+
 static void test_edit_commands_undo_redo_and_view_points(void)
 {
     static const uint8_t initial[] = {'a', 'b'};
@@ -1178,13 +1218,22 @@ static void test_minibuffer_requests(void)
     CHECK(strcmp(prompt, " [No matches]") == 0);
     CHECK(dispatch_key(loop, view, 'k', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_text_block(loop, view,
-                              (const uint8_t *)"beg", 3,
+                              (const uint8_t *)"beginning-of-l", 14,
                               &error) == KM_OK);
     CHECK(dispatch_key(loop, view, KM_KEY_TAB, 0, &error) == KM_OK);
     km_command_loop_format_prompt(loop, prompt, sizeof(prompt));
     CHECK(strcmp(prompt, "M-x beginning-of-line") == 0);
     CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
     CHECK(km_view_point(view).v == 0);
+    CHECK(km_buffer_line_numbers_visible(buffer));
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_text_block(
+              loop, view, (const uint8_t *)"display-line-numbers-mode", 25,
+              &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(!km_buffer_line_numbers_visible(buffer));
+    CHECK(km_command_loop_last_command(loop) ==
+          KM_COMMAND_DISPLAY_LINE_NUMBERS_MODE);
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
     CHECK(dispatch_text_block(loop, view, (const uint8_t *)"save-buffer", 11,
                               &error) == KM_OK);
@@ -1310,6 +1359,7 @@ int main(void)
     test_read_only_and_modified();
     test_char_commands_utf8_boundaries();
     test_word_commands();
+    test_buffer_edge_commands();
     test_edit_commands_undo_redo_and_view_points();
     test_edit_scope_and_atomic_rejection();
     test_undo_redo_respect_narrowing();

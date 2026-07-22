@@ -22,6 +22,7 @@ enum {
 enum {
     KM_STYLE_DEFAULT = 0,
     KM_STYLE_REGION,
+    KM_STYLE_LINE_NUMBER,
     KM_STYLE_MODELINE
 };
 

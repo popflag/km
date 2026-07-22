@@ -95,18 +95,22 @@ static void test_interactive_frame(void)
     char *output;
     size_t output_len;
 
-    CHECK(km_cell_grid_create(2, 3, &grid, &error) == KM_OK);
-    CHECK(km_cell_grid_put(grid, 1, 2, (const uint8_t *)"x", 1, 1, 0,
+    CHECK(km_cell_grid_create(2, 4, &grid, &error) == KM_OK);
+    CHECK(km_cell_grid_put(grid, 1, 3, (const uint8_t *)"x", 1, 1, 0,
                            &error) == KM_OK);
     CHECK(km_cell_grid_put(grid, 0, 0, (const uint8_t *)"r", 1, 1,
                            KM_STYLE_REGION, &error) == KM_OK);
-    CHECK(km_cell_grid_put(grid, 0, 1, (const uint8_t *)"m", 1, 1,
+    CHECK(km_cell_grid_put(grid, 0, 1, (const uint8_t *)"l", 1, 1,
+                           KM_STYLE_LINE_NUMBER, &error) == KM_OK);
+    CHECK(km_cell_grid_put(grid, 0, 2, (const uint8_t *)"m", 1, 1,
                            KM_STYLE_MODELINE, &error) == KM_OK);
-    CHECK(km_cell_grid_encode_frame_vt(grid, 1, 2, &output, &output_len,
+    CHECK(km_cell_grid_encode_frame_vt(grid, 1, 3, &output, &output_len,
                                        &error) == KM_OK);
-    CHECK(strstr(output, "\x1b[2;1H  x") != NULL);
-    CHECK(strstr(output, "\x1b[1;1H\x1b[0;7mr\x1b[0;1;7mm\x1b[0m") != NULL);
-    CHECK(strstr(output, "\x1b[2;3H\x1b[?25h") != NULL);
+    CHECK(strstr(output, "\x1b[2;1H   x") != NULL);
+    CHECK(strstr(output,
+                 "\x1b[1;1H\x1b[0;7mr\x1b[0;2ml\x1b[0;1;7mm\x1b[0m") !=
+          NULL);
+    CHECK(strstr(output, "\x1b[2;4H\x1b[?25h") != NULL);
     CHECK(output_len != 0 && output[output_len - 1] == 'h');
     CHECK(memchr(output, '\n', output_len) == NULL);
     free(output);

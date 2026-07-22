@@ -301,6 +301,8 @@ static KmStatus select_style(char **bytes, size_t *length, size_t *capacity,
     if (*current == wanted) return KM_OK;
     if (wanted == KM_STYLE_REGION) {
         status = append_bytes(bytes, length, capacity, "\x1b[0;7m", 6, error);
+    } else if (wanted == KM_STYLE_LINE_NUMBER) {
+        status = append_bytes(bytes, length, capacity, "\x1b[0;2m", 6, error);
     } else if (wanted == KM_STYLE_MODELINE) {
         status = append_bytes(bytes, length, capacity, "\x1b[0;1;7m", 8,
                               error);

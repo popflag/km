@@ -63,9 +63,11 @@
   `RET` 进入目录，目录末尾的 DEL 返回上一级。第一版仍是前缀匹配，不做
   flex/fuzzy；POSIX 中无法由 UTF-8 minibuffer 无损输入的非 UTF-8/control
   文件名会被候选枚举跳过。
-- 正文显示 document-global logical line number gutter；soft-wrap continuation
-  gutter 留空。行号宽度参与两次 layout pass 的 wrap/cursor/scroll 计算，终端
-  太窄时优先保留一个正文 cell。mode line 使用独立的 bold+reverse style，
+- 正文默认显示 document-global logical line number gutter；soft-wrap continuation
+  不重复行号。gutter 使用独立 dim style，并以竖线和一格留白分隔正文；
+  `display-line-numbers-mode` 作为 Buffer-local command 控制显示。行号宽度参与
+  两次 layout pass 的 wrap/cursor/scroll 计算，关闭时完全退出正文宽度计算，
+  终端太窄时优先保留一个正文 cell。mode line 使用独立的 bold+reverse style，
   继续显示 modified、Buffer 名、region 与 line/column；echo area/minibuffer
   在至少 3 行的终端独占最底行，不再覆盖或混入 mode line。物理高度不足 3
   行时无法同时容纳正文和两条 chrome：保留一行正文，prompt/message 临时优先
@@ -1052,6 +1054,7 @@ Harness 外部使用 Emacs 的 1-based character position；适配层通过严�
 self-insert-command
 forward-char / backward-char
 forward-word / backward-word
+beginning-of-buffer / end-of-buffer
 delete-char / delete-backward-char
 set-mark-command / exchange-point-and-mark
 kill-region / kill-line / yank / yank-pop

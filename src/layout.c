@@ -83,12 +83,16 @@ static void record_cursor(KmLayoutPass *pass, size_t offset,
 static KmStatus draw_line_number(KmLayoutPass *pass, bool numbered,
                                  KmError *error)
 {
+    static const uint8_t separator[] = {0xe2, 0x94, 0x82};
     char digits[32];
     size_t digit_len = 0;
     size_t digit_offset = 0;
-    size_t number_columns = pass->gutter_width == 0
-                                ? 0
-                                : pass->gutter_width - 1;
+    size_t number_columns = pass->gutter_width > 2
+                                ? pass->gutter_width - 2
+                                : 0;
+    size_t separator_column = pass->gutter_width > 1
+                                  ? pass->gutter_width - 2
+                                  : 0;
     size_t start = number_columns;
     size_t column;
 
@@ -118,14 +122,19 @@ static KmStatus draw_line_number(KmLayoutPass *pass, bool numbered,
         return KM_OK;
     }
     for (column = 0; column < pass->gutter_width; ++column) {
-        uint8_t glyph = ' ';
+        uint8_t space = ' ';
+        const uint8_t *glyph = &space;
+        size_t glyph_len = 1;
         if (numbered && column >= start && column < start + digit_len) {
-            glyph = (uint8_t)digits[digit_offset + column - start];
+            glyph = (const uint8_t *)&digits[digit_offset + column - start];
+        } else if (column == separator_column) {
+            glyph = separator;
+            glyph_len = sizeof(separator);
         }
         {
             KmStatus status = km_cell_grid_put(
                 pass->grid, pass->row - pass->scroll_row, column,
-                &glyph, 1, 1, KM_STYLE_DEFAULT, error);
+                glyph, glyph_len, 1, KM_STYLE_LINE_NUMBER, error);
             if (status != KM_OK) return status;
         }
     }
@@ -477,7 +486,7 @@ static size_t line_number_gutter(const uint8_t *text, size_t len,
         value /= 10;
         ++digits;
     }
-    gutter = digits > SIZE_MAX - 2 ? SIZE_MAX : digits + 2;
+    gutter = digits > SIZE_MAX - 3 ? SIZE_MAX : digits + 3;
     if (columns <= 1) return 0;
     if (gutter >= columns) gutter = columns - 1;
     return gutter;
@@ -533,7 +542,9 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     content_rows = content_row_count(rows);
     status = line_number_base(document, start, &line_base, error);
     if (status != KM_OK) goto fail;
-    gutter_width = line_number_gutter(text, len, line_base, columns);
+    gutter_width = km_buffer_line_numbers_visible(buffer)
+                       ? line_number_gutter(text, len, line_base, columns)
+                       : 0;
     text_columns = columns - gutter_width;
     pass.text = text;
     pass.len = len;
@@ -691,7 +702,9 @@ KmStatus km_layout_scroll_view(const KmBuffer *buffer, KmView *view,
     }
     status = line_number_base(document, start, &line_base, error);
     if (status != KM_OK) goto done;
-    gutter_width = line_number_gutter(text, len, line_base, columns);
+    gutter_width = km_buffer_line_numbers_visible(buffer)
+                       ? line_number_gutter(text, len, line_base, columns)
+                       : 0;
     content_rows = content_row_count(rows);
     pass.text = text;
     pass.len = len;

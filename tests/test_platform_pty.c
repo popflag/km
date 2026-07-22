@@ -140,7 +140,7 @@ static int run_probe(int terminate_with_signal, const char *path,
             goto kill_child;
         }
         if (wait_for_text(master, output, sizeof(output), &output_len,
-                          " 2 \xe4\xb8\xadq", 2000) != 0) {
+                          "\xe4\xb8\xadq", 2000) != 0) {
             goto kill_child;
         }
     } else if (second_path == NULL) {
