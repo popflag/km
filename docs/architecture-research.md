@@ -39,7 +39,9 @@
 - `C-x C-s` 使用同目录排他临时文件、数据 flush 和原子 replace；保存前
   检查文件 identity，成功后才更新 `saved_state_id`。
 - 支持 code-point 左右移动/删除、按 cell column 的上下移动、行首/行尾、
-  `M-m` 首个非空白字符、mark/region、`C-w`、`M-w`、`C-k`、`C-y`、
+  Buffer 边界、空白行分隔的段落移动、默认双空格规则的句子移动、`M-m`
+  首个非空白字符、mark/region、`C-x h`、`C-w`、`M-w`、`C-k`、`M-d`、
+  `M-DEL`、`C-y`、`M-y`、`C-o`、`C-t`、`M-t`、`M-\`、`M-g g`、`C-l`、
   undo/redo 和大小写敏感的
   UTF-8 增量搜索。`C-s`/`C-r` 切换前后方向并重复查找，越过 accessible
   range 边界时环绕；提示行区分 forward、backward、wrapped 和 failing。
@@ -76,8 +78,12 @@
   后的 visual row 滚动。无 prefix 时保留 2 行上下文；数字 prefix 指定行数，
   负数反向，`C-u -` / `M--` 保留 Emacs 的反向整页语义。point 仅在将离开
   新 viewport 时移动到可见边界。
-- 当前 kill ring 只有一个 entry；kill coalescing、`yank-pop` 和完整 Emacs
-  undo 遍历仍需差分测试后扩展。
+- `C-l` 将 point 居中，numeric prefix 指定从顶部或底部计算的屏幕行；当前不做
+  连续 `C-l` 的 center/top/bottom 轮换。`M-g g` 使用 document-global 行号，
+  但目标在 narrowing 外时拒绝移动，不像 GNU Emacs `goto-line` 那样隐式 widen。
+- kill ring 保留最近 60 个 entry；连续前向 kill 追加、连续后向 kill 前置，
+  `M-y` 只在紧随 `C-y`/`M-y` 且 Document revision 未改变时替换上一段 yank。
+  完整 Emacs undo 遍历仍需差分测试后扩展。
 - POSIX 输入识别 ESC Meta、常见 CSI/SS3 方向键和 bracketed paste；Win32
   record 输入识别对应 named keys，但按平台限制不声称有 paste boundary。
 - Renderer 当前仍执行完整 CellGrid frame 输出；front/back row diff 是下一
@@ -1054,8 +1060,11 @@ Harness 外部使用 Emacs 的 1-based character position；适配层通过严�
 self-insert-command
 forward-char / backward-char
 forward-word / backward-word
+forward-paragraph / backward-paragraph
 beginning-of-buffer / end-of-buffer
 delete-char / delete-backward-char
+kill-word / backward-kill-word
+open-line / transpose-chars / delete-horizontal-space
 set-mark-command / exchange-point-and-mark
 kill-region / kill-line / yank / yank-pop
 universal-argument and numeric arguments

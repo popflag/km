@@ -36,7 +36,8 @@ typedef enum {
     KM_COMMAND_REQUEST_COMPLETE_FILE,
     KM_COMMAND_REQUEST_COMPLETE_BUFFER,
     KM_COMMAND_REQUEST_SCROLL_UP,
-    KM_COMMAND_REQUEST_SCROLL_DOWN
+    KM_COMMAND_REQUEST_SCROLL_DOWN,
+    KM_COMMAND_REQUEST_RECENTER
 } KmCommandRequest;
 
 typedef enum {
@@ -54,20 +55,34 @@ typedef enum {
     KM_COMMAND_END_OF_LINE,
     KM_COMMAND_BEGINNING_OF_BUFFER,
     KM_COMMAND_END_OF_BUFFER,
+    KM_COMMAND_FORWARD_PARAGRAPH,
+    KM_COMMAND_BACKWARD_PARAGRAPH,
+    KM_COMMAND_FORWARD_SENTENCE,
+    KM_COMMAND_BACKWARD_SENTENCE,
     KM_COMMAND_NEXT_LINE,
     KM_COMMAND_PREVIOUS_LINE,
     KM_COMMAND_SET_MARK,
+    KM_COMMAND_MARK_WHOLE_BUFFER,
     KM_COMMAND_EXCHANGE_POINT_AND_MARK,
     KM_COMMAND_KILL_REGION,
     KM_COMMAND_COPY_REGION,
     KM_COMMAND_KILL_LINE,
+    KM_COMMAND_KILL_WORD,
+    KM_COMMAND_BACKWARD_KILL_WORD,
     KM_COMMAND_YANK,
+    KM_COMMAND_YANK_POP,
+    KM_COMMAND_OPEN_LINE,
+    KM_COMMAND_TRANSPOSE_CHARS,
+    KM_COMMAND_TRANSPOSE_WORDS,
+    KM_COMMAND_DELETE_HORIZONTAL_SPACE,
     KM_COMMAND_SEARCH_FORWARD,
     KM_COMMAND_SEARCH_BACKWARD,
     KM_COMMAND_UNDO,
     KM_COMMAND_REDO,
     KM_COMMAND_SCROLL_UP,
     KM_COMMAND_SCROLL_DOWN,
+    KM_COMMAND_RECENTER,
+    KM_COMMAND_GOTO_LINE,
     KM_COMMAND_DISPLAY_LINE_NUMBERS_MODE
 } KmCommandId;
 
@@ -119,6 +134,10 @@ KmStatus km_view_beginning_of_line(KmView *view, KmError *error);
 KmStatus km_view_end_of_line(KmView *view, KmError *error);
 KmStatus km_view_beginning_of_buffer(KmView *view, KmError *error);
 KmStatus km_view_end_of_buffer(KmView *view, KmError *error);
+KmStatus km_view_forward_paragraph(KmView *view, KmError *error);
+KmStatus km_view_backward_paragraph(KmView *view, KmError *error);
+KmStatus km_view_forward_sentence(KmView *view, KmError *error);
+KmStatus km_view_backward_sentence(KmView *view, KmError *error);
 KmStatus km_view_next_line(KmView *view, KmError *error);
 KmStatus km_view_previous_line(KmView *view, KmError *error);
 KmStatus km_view_undo(KmView *view, KmError *error);

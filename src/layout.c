@@ -566,6 +566,7 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     result.cursor_row = pass.cursor_row - scroll_row;
     result.cursor_column = pass.cursor_column;
     result.scroll_row = scroll_row;
+    result.visual_rows = pass.visual_rows;
     result.hard_line = line_base + pass.cursor_hard_line;
     result.hard_column = pass.cursor_hard_column;
 
@@ -787,4 +788,43 @@ KmStatus km_layout_scroll_view(const KmBuffer *buffer, KmView *view,
 done:
     free(text);
     return status;
+}
+
+KmStatus km_layout_recenter_scroll(const KmLayoutResult *layout, size_t rows,
+                                   bool has_argument, int64_t argument,
+                                   size_t *out_scroll_row, KmError *error)
+{
+    size_t content_rows;
+    size_t desired_row;
+    size_t cursor_row;
+    size_t max_scroll;
+
+    km_error_clear(error);
+    if (layout == NULL || rows == 0 || out_scroll_row == NULL ||
+        layout->scroll_row > SIZE_MAX - layout->cursor_row) {
+        return fail(error, KM_ERR_INVALID, "recenter view");
+    }
+    content_rows = content_row_count(rows);
+    if (!has_argument) {
+        /* ponytail: add center/top/bottom cycling when users need it. */
+        desired_row = content_rows / 2;
+    } else if (argument >= 0) {
+        desired_row = (uint64_t)argument >= (uint64_t)content_rows
+                          ? content_rows - 1
+                          : (size_t)argument;
+    } else {
+        uint64_t from_bottom = (uint64_t)(-(argument + 1)) + 1u;
+        desired_row = from_bottom >= (uint64_t)content_rows
+                          ? 0
+                          : content_rows - (size_t)from_bottom;
+    }
+    cursor_row = layout->scroll_row + layout->cursor_row;
+    max_scroll = layout->visual_rows > content_rows
+                     ? layout->visual_rows - content_rows
+                     : 0;
+    *out_scroll_row = cursor_row > desired_row
+                          ? cursor_row - desired_row
+                          : 0;
+    if (*out_scroll_row > max_scroll) *out_scroll_row = max_scroll;
+    return KM_OK;
 }

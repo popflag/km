@@ -384,6 +384,285 @@ static void test_buffer_edge_commands(void)
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
 }
 
+static void test_paragraph_and_common_edit_commands(void)
+{
+    static const uint8_t paragraphs[] =
+        "one\ntwo\n\nthree\nfour\n\n\nfive";
+    static const uint8_t words[] = "one two three";
+    static const uint8_t after_kill[] = " two three";
+    static const uint8_t after_backward_kill[] = "one two ";
+    static const uint8_t open_result[] = "a\n\nb";
+    static const uint8_t transpose_text[] = {
+        'a', 0xe4, 0xb8, 0xad, 'b',
+    };
+    static const uint8_t transpose_result[] = {
+        0xe4, 0xb8, 0xad, 'a', 'b',
+    };
+    KmBuffer *buffer = make_base(paragraphs, sizeof(paragraphs) - 1);
+    KmView *view = NULL;
+    KmCommandLoop *loop = NULL;
+    KmError error;
+    KmRevision revision;
+
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '}', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 8);
+    CHECK(dispatch_key(loop, view, '}', KM_MOD_ALT | KM_MOD_SHIFT, &error) ==
+          KM_OK);
+    CHECK(km_view_point(view).v == 20);
+    CHECK(dispatch_key(loop, view, '{', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 8);
+    CHECK(dispatch_key(loop, view, '{', KM_MOD_ALT | KM_MOD_SHIFT, &error) ==
+          KM_OK);
+    CHECK(km_view_point(view).v == 0);
+    CHECK(dispatch_key(loop, view, '4', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '}', KM_MOD_ALT, &error) == KM_ERR_INVALID);
+    CHECK(km_view_point(view).v == 0);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    buffer = make_base(words, sizeof(words) - 1);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    revision = km_document_revision(km_buffer_document(buffer));
+    CHECK(dispatch_key(loop, view, 'd', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_document_revision(km_buffer_document(buffer)) == revision + 1);
+    check_text(buffer, after_kill, sizeof(after_kill) - 1);
+    CHECK(dispatch_key(loop, view, 'y', KM_MOD_CTRL, &error) == KM_OK);
+    check_text(buffer, words, sizeof(words) - 1);
+    CHECK(km_view_set_point(view, (KmBytePos){sizeof(words) - 1}, &error) ==
+          KM_OK);
+    CHECK(dispatch_key(loop, view, 0x7f, KM_MOD_ALT, &error) == KM_OK);
+    check_text(buffer, after_backward_kill, sizeof(after_backward_kill) - 1);
+    CHECK(dispatch_key(loop, view, 'y', KM_MOD_CTRL, &error) == KM_OK);
+    check_text(buffer, words, sizeof(words) - 1);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    buffer = make_base((const uint8_t *)"ab", 2);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){1}, &error) == KM_OK);
+    revision = km_document_revision(km_buffer_document(buffer));
+    CHECK(dispatch_key(loop, view, '2', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'o', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_document_revision(km_buffer_document(buffer)) == revision + 1);
+    check_text(buffer, open_result, sizeof(open_result) - 1);
+    CHECK(km_view_point(view).v == 1);
+    CHECK(km_view_undo(view, &error) == KM_OK);
+    check_text(buffer, (const uint8_t *)"ab", 2);
+    CHECK(km_view_point(view).v == 1);
+    CHECK(km_view_redo(view, &error) == KM_OK);
+    check_text(buffer, open_result, sizeof(open_result) - 1);
+    CHECK(km_view_point(view).v == 1);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    buffer = make_base(transpose_text, sizeof(transpose_text));
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){1}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 't', KM_MOD_CTRL, &error) == KM_OK);
+    check_text(buffer, transpose_result, sizeof(transpose_result));
+    CHECK(km_view_point(view).v == 4);
+    CHECK(km_view_undo(view, &error) == KM_OK);
+    check_text(buffer, transpose_text, sizeof(transpose_text));
+    CHECK(km_view_point(view).v == 1);
+    CHECK(km_view_redo(view, &error) == KM_OK);
+    check_text(buffer, transpose_result, sizeof(transpose_result));
+    CHECK(km_view_point(view).v == 4);
+    CHECK(km_view_undo(view, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '2', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 't', KM_MOD_CTRL, &error) == KM_OK);
+    check_text(buffer,
+               (const uint8_t *)"\xe4\xb8\xad" "ba", 5);
+    CHECK(km_view_point(view).v == 5);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    buffer = make_base((const uint8_t *)"abc", 3);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){3}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '-', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 't', KM_MOD_CTRL, &error) == KM_OK);
+    check_text(buffer, (const uint8_t *)"bac", 3);
+    CHECK(km_view_point(view).v == 1);
+    CHECK(km_view_undo(view, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 3);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    buffer = make_base((const uint8_t *)"a \t b", 5);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){3}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '\\', KM_MOD_ALT, &error) == KM_OK);
+    check_text(buffer, (const uint8_t *)"ab", 2);
+    CHECK(km_view_undo(view, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){3}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '1', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '\\', KM_MOD_ALT, &error) == KM_OK);
+    check_text(buffer, (const uint8_t *)"a b", 3);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+}
+
+static void test_kill_ring_and_added_movement_commands(void)
+{
+    static const uint8_t words[] = "one two three";
+    static const uint8_t transposed[] = "two three one";
+    static const uint8_t sentences[] =
+        "One. Two!  Three?\nFour. \xe4\xba\x94\xe3\x80\x82\xe5\x85\xad";
+    KmBuffer *buffer = make_base(words, sizeof(words) - 1);
+    KmView *view = NULL;
+    KmCommandLoop *loop = NULL;
+    KmError error;
+    char prompt[64];
+    uint8_t ring_source[61];
+    uint8_t ring_expected[62];
+    size_t i;
+
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'd', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'd', KM_MOD_ALT, &error) == KM_OK);
+    check_text(buffer, (const uint8_t *)" three", 6);
+    CHECK(dispatch_key(loop, view, 'y', KM_MOD_CTRL, &error) == KM_OK);
+    check_text(buffer, words, sizeof(words) - 1);
+
+    CHECK(km_view_set_point(view, (KmBytePos){0}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, ' ', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){3}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'w', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){4}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, ' ', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){7}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'w', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){13}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'y', KM_MOD_CTRL, &error) == KM_OK);
+    check_text(buffer, (const uint8_t *)"one two threetwo", 16);
+    CHECK(dispatch_key(loop, view, 'y', KM_MOD_ALT, &error) == KM_OK);
+    check_text(buffer, (const uint8_t *)"one two threeone", 16);
+    CHECK(km_view_point(view).v == 16);
+    CHECK(dispatch_key(loop, view, 'u', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'y', KM_MOD_ALT, &error) == KM_OK);
+    check_text(buffer, (const uint8_t *)"one two threeone two", 20);
+    CHECK(km_view_point(view).v == 20);
+    CHECK(km_view_undo(view, &error) == KM_OK);
+    check_text(buffer, (const uint8_t *)"one two threeone", 16);
+    CHECK(km_view_point(view).v == 16);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    for (i = 0; i < sizeof(ring_source); ++i) {
+        ring_source[i] = (uint8_t)('!' + i);
+    }
+    buffer = make_base(ring_source, sizeof(ring_source));
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    for (i = 0; i < sizeof(ring_source); ++i) {
+        CHECK(km_view_set_point(view, (KmBytePos){i}, &error) == KM_OK);
+        CHECK(dispatch_key(loop, view, ' ', KM_MOD_CTRL, &error) == KM_OK);
+        CHECK(km_view_set_point(view, (KmBytePos){i + 1}, &error) == KM_OK);
+        CHECK(dispatch_key(loop, view, 'w', KM_MOD_ALT, &error) == KM_OK);
+    }
+    CHECK(dispatch_key(loop, view, 'y', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '-', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'y', KM_MOD_ALT, &error) == KM_OK);
+    memcpy(ring_expected, ring_source, sizeof(ring_source));
+    ring_expected[sizeof(ring_source)] = ring_source[1];
+    check_text(buffer, ring_expected, sizeof(ring_expected));
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    buffer = make_base(words, sizeof(words) - 1);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){13}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 0x7f, KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 0x7f, KM_MOD_ALT, &error) == KM_OK);
+    check_text(buffer, (const uint8_t *)"one ", 4);
+    CHECK(dispatch_key(loop, view, 'y', KM_MOD_CTRL, &error) == KM_OK);
+    check_text(buffer, words, sizeof(words) - 1);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    buffer = make_base(words, sizeof(words) - 1);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){4}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '2', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 't', KM_MOD_ALT, &error) == KM_OK);
+    check_text(buffer, transposed, sizeof(transposed) - 1);
+    CHECK(km_view_point(view).v == 13);
+    CHECK(km_view_undo(view, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 4);
+    CHECK(km_view_set_point(view, (KmBytePos){7}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, '-', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 't', KM_MOD_ALT, &error) == KM_OK);
+    check_text(buffer, (const uint8_t *)"two one three", 13);
+    CHECK(km_view_point(view).v == 3);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    buffer = make_base(sentences, sizeof(sentences) - 1);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'e', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 9);
+    CHECK(dispatch_key(loop, view, 'e', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 17);
+    CHECK(dispatch_key(loop, view, 'a', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 11);
+    CHECK(km_view_set_point(view, (KmBytePos){24}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'e', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 30);
+
+    CHECK(km_buffer_narrow(buffer, (KmBytePos){6}, (KmBytePos){30}, &error) ==
+          KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){17}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'h', 0, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 6);
+    CHECK(km_buffer_mark_active(buffer));
+    CHECK(km_buffer_mark(buffer).v == 30);
+    CHECK(dispatch_key(loop, view, '2', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'g', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'g', 0, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 18);
+    CHECK(dispatch_key(loop, view, '1', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'g', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'g', 0, &error) == KM_ERR_INVALID);
+    CHECK(km_view_point(view).v == 18);
+    CHECK(dispatch_key(loop, view, 'g', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'g', 0, &error) == KM_OK);
+    CHECK(km_command_loop_prompt_active(loop));
+    km_command_loop_format_prompt(loop, prompt, sizeof(prompt));
+    CHECK(strcmp(prompt, "Goto line: ") == 0);
+    CHECK(dispatch_text(loop, view, '2', 1, &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 18);
+    CHECK(dispatch_key(loop, view, 'l', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_RECENTER);
+    CHECK(!km_command_loop_request_has_argument(loop));
+    km_command_loop_clear_request(loop);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+}
+
 static void test_edit_commands_undo_redo_and_view_points(void)
 {
     static const uint8_t initial[] = {'a', 'b'};
@@ -1360,6 +1639,8 @@ int main(void)
     test_char_commands_utf8_boundaries();
     test_word_commands();
     test_buffer_edge_commands();
+    test_paragraph_and_common_edit_commands();
+    test_kill_ring_and_added_movement_commands();
     test_edit_commands_undo_redo_and_view_points();
     test_edit_scope_and_atomic_rejection();
     test_undo_redo_respect_narrowing();

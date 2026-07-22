@@ -8,6 +8,7 @@ typedef struct {
     size_t cursor_row;
     size_t cursor_column;
     size_t scroll_row;
+    size_t visual_rows;
     size_t hard_line;
     size_t hard_column;
 } KmLayoutResult;
@@ -23,5 +24,8 @@ KmStatus km_layout_scroll_view(const KmBuffer *buffer, KmView *view,
                                size_t scroll_row, bool forward,
                                bool has_argument, int64_t argument,
                                size_t *out_scroll_row, KmError *error);
+KmStatus km_layout_recenter_scroll(const KmLayoutResult *layout, size_t rows,
+                                   bool has_argument, int64_t argument,
+                                   size_t *out_scroll_row, KmError *error);
 
 #endif

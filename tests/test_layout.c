@@ -370,6 +370,36 @@ static void test_scroll_commands(void)
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
 }
 
+static void test_recenter_scroll(void)
+{
+    KmLayoutResult layout = {0};
+    KmError error;
+    size_t scroll = 99;
+
+    layout.scroll_row = 8;
+    layout.cursor_row = 2;
+    layout.visual_rows = 20;
+    CHECK(km_layout_recenter_scroll(&layout, 7, false, 1, &scroll, &error) ==
+          KM_OK);
+    CHECK(scroll == 8);
+    CHECK(km_layout_recenter_scroll(&layout, 7, true, 0, &scroll, &error) ==
+          KM_OK);
+    CHECK(scroll == 10);
+    CHECK(km_layout_recenter_scroll(&layout, 7, true, -1, &scroll, &error) ==
+          KM_OK);
+    CHECK(scroll == 6);
+
+    layout.scroll_row = 15;
+    layout.cursor_row = 3;
+    CHECK(km_layout_recenter_scroll(&layout, 7, false, 1, &scroll, &error) ==
+          KM_OK);
+    CHECK(scroll == 15);
+    layout.scroll_row = SIZE_MAX;
+    layout.cursor_row = 1;
+    CHECK(km_layout_recenter_scroll(&layout, 7, false, 1, &scroll, &error) ==
+          KM_ERR_INVALID);
+}
+
 int main(void)
 {
     test_unicode_and_controls();
@@ -377,6 +407,7 @@ int main(void)
     test_unicode_file_name_status();
     test_line_number_gutter();
     test_scroll_commands();
+    test_recenter_scroll();
     puts("layout tests passed");
     return 0;
 }

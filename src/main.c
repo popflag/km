@@ -535,6 +535,36 @@ int main(int argc, char **argv)
             }
             break;
         }
+        case KM_COMMAND_REQUEST_RECENTER: {
+            size_t *scroll_row =
+                &buffers.items[buffers.current].scroll_row;
+            KmCellGrid *scratch = NULL;
+            KmLayoutResult layout;
+            int64_t argument = km_command_loop_request_argument(loop);
+            bool has_argument =
+                km_command_loop_request_has_argument(loop);
+            unsigned columns;
+            unsigned rows;
+
+            km_command_loop_clear_request(loop);
+            km_platform_size(platform, &columns, &rows);
+            status = km_layout_view(
+                buffers.items[buffers.current].buffer, view, rows, columns,
+                *scroll_row, NULL, NULL, false, &scratch, &layout,
+                &core_error);
+            if (status != KM_OK) {
+                set_core_error(message, sizeof(message), &core_error);
+                break;
+            }
+            km_cell_grid_destroy(scratch);
+            status = km_layout_recenter_scroll(
+                &layout, rows, has_argument, argument, scroll_row,
+                &core_error);
+            if (status != KM_OK) {
+                set_core_error(message, sizeof(message), &core_error);
+            }
+            break;
+        }
         case KM_COMMAND_REQUEST_EXIT:
             km_command_loop_clear_request(loop);
             if (!any_modified_buffer(&buffers)) {

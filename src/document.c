@@ -24,6 +24,9 @@ typedef struct {
 typedef struct {
     KmAnchorId id;
     size_t old_pos;
+    size_t new_pos;
+    size_t expected_before_forward;
+    size_t expected_after_forward;
     size_t expected_before_inverse;
     size_t expected_after_inverse;
     bool eligible;
@@ -598,6 +601,9 @@ static KmStatus prepare_transaction(KmDocument *document,
                     &transaction->restores[transaction->restore_count++];
                 restore->id = snapshots[i].id;
                 restore->old_pos = snapshots[i].pos;
+                restore->new_pos = final_position;
+                restore->expected_before_forward = snapshots[i].pos;
+                restore->expected_after_forward = final_position;
                 restore->expected_before_inverse = final_position;
                 restore->expected_after_inverse = inverse_position;
             }
@@ -838,8 +844,10 @@ KmStatus km_anchor_set(KmAnchor *anchor, KmBytePos position, KmError *error) {
     return KM_OK;
 }
 
-KmStatus km_document_apply(KmDocument *document, const KmSplice *splices,
-                           size_t count, KmTxnMeta meta, KmError *error) {
+static KmStatus document_apply(KmDocument *document, const KmSplice *splices,
+                               size_t count, KmTxnMeta meta,
+                               KmAnchor *moved_anchor, size_t moved_position,
+                               KmError *error) {
     KmUndoTxn *transaction;
     KmUndoTxn *discard;
     KmStatus status;
@@ -863,11 +871,39 @@ KmStatus km_document_apply(KmDocument *document, const KmSplice *splices,
         return status;
     }
     if (transaction == NULL) {
+        if (moved_anchor != NULL) moved_anchor->pos = moved_position;
         return KM_OK;
+    }
+
+    if (moved_anchor != NULL) {
+        KmAnchorRestore *restore = NULL;
+        size_t i;
+
+        for (i = 0; i < transaction->restore_count; ++i) {
+            if (transaction->restores[i].id == moved_anchor->id) {
+                restore = &transaction->restores[i];
+                break;
+            }
+        }
+        if (restore == NULL) {
+            restore = &transaction->restores[transaction->restore_count++];
+            restore->id = moved_anchor->id;
+            restore->old_pos = moved_anchor->pos;
+            restore->expected_before_forward = moved_anchor->pos;
+        }
+        restore->new_pos = moved_position;
+        restore->expected_after_forward = simulate_position(
+            moved_anchor->pos, moved_anchor->affinity,
+            transaction->forward, transaction->splice_count);
+        restore->expected_before_inverse = moved_position;
+        restore->expected_after_inverse = simulate_position(
+            moved_position, moved_anchor->affinity,
+            transaction->inverse, transaction->splice_count);
     }
 
     apply_owned_splices(document, transaction->forward,
                         transaction->splice_count);
+    if (moved_anchor != NULL) moved_anchor->pos = moved_position;
     discard = document->history_cursor != NULL
                   ? document->history_cursor->next
                   : document->history_head;
@@ -888,6 +924,52 @@ KmStatus km_document_apply(KmDocument *document, const KmSplice *splices,
     ++document->next_state_id;
     ++document->revision;
     return KM_OK;
+}
+
+KmStatus km_document_apply(KmDocument *document, const KmSplice *splices,
+                           size_t count, KmTxnMeta meta, KmError *error) {
+    return document_apply(document, splices, count, meta, NULL, 0, error);
+}
+
+static bool boundary_after_splice(const KmDocument *document,
+                                  const KmSplice *splice, size_t position) {
+    size_t deleted;
+    size_t final_len;
+    size_t inserted_end;
+
+    if (splice->start.v > splice->end.v ||
+        splice->end.v > text_len(document) ||
+        splice->insert_len > SIZE_MAX - splice->start.v ||
+        text_len(document) - (splice->end.v - splice->start.v) >
+            SIZE_MAX - splice->insert_len) {
+        return false;
+    }
+    deleted = splice->end.v - splice->start.v;
+    final_len = text_len(document) - deleted + splice->insert_len;
+    inserted_end = splice->start.v + splice->insert_len;
+    if (position > final_len) return false;
+    if (position < splice->start.v) return is_boundary(document, position);
+    if (position <= inserted_end) {
+        size_t offset = position - splice->start.v;
+        return valid_utf8(splice->insert, offset);
+    }
+    return is_boundary(document,
+                       position - splice->insert_len + deleted);
+}
+
+KmStatus km_document_apply_and_set_anchor(KmDocument *document,
+                                          const KmSplice *splice,
+                                          KmTxnMeta meta, KmAnchor *anchor,
+                                          KmBytePos position,
+                                          KmError *error) {
+    km_error_clear(error);
+    if (document == NULL || splice == NULL || anchor == NULL ||
+        anchor->document != document ||
+        !boundary_after_splice(document, splice, position.v)) {
+        return fail(error, KM_ERR_INVALID, "document apply anchor");
+    }
+    return document_apply(document, splice, 1, meta, anchor, position.v,
+                          error);
 }
 
 bool km_document_can_undo(const KmDocument *document) {
@@ -987,6 +1069,7 @@ KmStatus km_document_undo(KmDocument *document,
 KmStatus km_document_redo(KmDocument *document,
                           KmRevision expected_revision, KmError *error) {
     KmUndoTxn *transaction;
+    size_t i;
     km_error_clear(error);
     if (document == NULL) {
         return fail(error, KM_ERR_INVALID, "document redo");
@@ -1003,8 +1086,22 @@ KmStatus km_document_redo(KmDocument *document,
     if (transaction == NULL) {
         return fail(error, KM_ERR_INVALID, "document redo");
     }
+    for (i = 0; i < transaction->restore_count; ++i) {
+        KmAnchorRestore *restore = &transaction->restores[i];
+        KmAnchor *anchor = find_anchor(document, restore->id);
+        restore->eligible = anchor != NULL &&
+                            anchor->pos == restore->expected_before_forward;
+    }
     apply_owned_splices(document, transaction->forward,
                         transaction->splice_count);
+    for (i = 0; i < transaction->restore_count; ++i) {
+        KmAnchorRestore *restore = &transaction->restores[i];
+        KmAnchor *anchor = find_anchor(document, restore->id);
+        if (anchor != NULL && restore->eligible &&
+            anchor->pos == restore->expected_after_forward) {
+            anchor->pos = restore->new_pos;
+        }
+    }
     document->history_state = transaction->state_after;
     document->history_cursor = transaction;
     ++document->revision;

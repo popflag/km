@@ -177,6 +177,14 @@ static void test_explicit_anchor_move_survives_undo(void) {
           KM_OK);
     check_text(document, initial, sizeof(initial) - 1);
     CHECK(km_anchor_get(anchor).v == 2);
+    {
+        KmSplice no_op = {{2}, {2}, NULL, 0, 0};
+        KmTxnMeta meta = {km_document_revision(document), 1};
+        CHECK(km_document_apply_and_set_anchor(
+                  document, &no_op, meta, anchor, (KmBytePos){5}, &error) ==
+              KM_OK);
+        CHECK(km_anchor_get(anchor).v == 5);
+    }
     km_document_destroy(document);
 }
 
