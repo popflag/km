@@ -40,7 +40,9 @@
   检查文件 identity，成功后才更新 `saved_state_id`。
 - 支持 code-point 左右移动/删除、按 cell column 的上下移动、行首/行尾、
   mark/region、`C-w`、`M-w`、`C-k`、`C-y`、undo/redo 和大小写敏感的
-  UTF-8 增量 `C-s`。
+  UTF-8 增量搜索。`C-s`/`C-r` 切换前后方向并重复查找，越过 accessible
+  range 边界时环绕；提示行区分 forward、backward、wrapped 和 failing。
+  `DEL` 回退一个 Unicode code point，`RET` 接受，`C-g` 取消并恢复搜索起点。
 - `C-x C-f` 通过 UTF-8 minibuffer 打开或创建文件；`C-x b` 按完整显示名
   切换 Buffer，空输入循环到下一个；`C-x k` 关闭当前 Buffer。关闭最后一个
   Buffer 会立即创建新的 `*scratch*`。

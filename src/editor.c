@@ -83,7 +83,9 @@ struct KmCommandLoop {
     size_t search_cap;
     KmBytePos search_origin;
     bool search_active;
+    bool search_forward;
     bool search_failed;
+    bool search_wrapped;
 };
 
 typedef KmStatus (*KmCommandCallback)(KmCommandLoop *loop, KmView *view,
@@ -158,8 +160,8 @@ static const KmKeyNode key_trie[] = {
     {'x', KM_MOD_ALT, KM_INTERNAL_EXTENDED_COMMAND,
      KM_NO_KEY_NODE, 34},
     {'v', KM_MOD_CTRL, KM_COMMAND_SCROLL_UP, KM_NO_KEY_NODE, 35},
-    {'v', KM_MOD_ALT, KM_COMMAND_SCROLL_DOWN,
-     KM_NO_KEY_NODE, KM_NO_KEY_NODE},
+    {'v', KM_MOD_ALT, KM_COMMAND_SCROLL_DOWN, KM_NO_KEY_NODE, 36},
+    {'r', KM_MOD_CTRL, KM_INTERNAL_SEARCH, KM_NO_KEY_NODE, KM_NO_KEY_NODE},
 };
 
 static KmStatus fail(KmError *error, KmStatus status, const char *operation)
@@ -1826,6 +1828,7 @@ static const char *const application_commands[] = {
     "save-buffer",
     "save-buffers-kill-terminal",
     "isearch-forward",
+    "isearch-backward",
 };
 
 static void clear_completions(KmCommandLoop *loop)
@@ -2028,12 +2031,16 @@ static KmStatus execute_named_command(KmCommandLoop *loop, KmView *view,
         loop->request = KM_COMMAND_REQUEST_SAVE_ALL_EXIT;
         return KM_OK;
     }
-    if (prompt_is(loop, "isearch-forward")) {
+    if (prompt_is(loop, "isearch-forward") ||
+        prompt_is(loop, "isearch-backward")) {
+        bool forward = prompt_is(loop, "isearch-forward");
         loop->prompt_kind = KM_PROMPT_NONE;
         loop->search_origin = km_anchor_get(view->point);
         loop->search_len = 0;
         loop->search_active = true;
+        loop->search_forward = forward;
         loop->search_failed = false;
+        loop->search_wrapped = false;
         return KM_OK;
     }
     for (i = 0; i < sizeof(command_registry) / sizeof(command_registry[0]); ++i) {
@@ -2187,20 +2194,57 @@ static KmStatus dispatch_prompt(KmCommandLoop *loop, KmView *view,
     return fail(error, KM_ERR_INVALID, "minibuffer key");
 }
 
-static KmStatus search_from(KmCommandLoop *loop, KmView *view,
-                            size_t start, KmError *error)
+static bool search_match_at(const KmCommandLoop *loop,
+                            const KmDocument *document, const uint8_t *text,
+                            KmBytePos begv, KmBytePos zv, size_t scan)
+{
+    KmBytePos candidate = {begv.v + scan};
+    KmBytePos candidate_end = {candidate.v + loop->search_len};
+
+    return candidate_end.v <= zv.v &&
+           km_document_is_boundary(document, candidate) &&
+           km_document_is_boundary(document, candidate_end) &&
+           memcmp(text + scan, loop->search_query, loop->search_len) == 0;
+}
+
+static KmBytePos accessible_search_origin(const KmCommandLoop *loop,
+                                          const KmView *view)
+{
+    KmBytePos begv = km_anchor_get(view->buffer->begv);
+    KmBytePos zv = km_anchor_get(view->buffer->zv);
+    KmBytePos origin = loop->search_origin;
+
+    if (origin.v < begv.v) return begv;
+    if (origin.v > zv.v) return zv;
+    return origin;
+}
+
+static KmStatus search_query(KmCommandLoop *loop, KmView *view,
+                             bool repeat, KmError *error)
 {
     const KmDocument *document = view->buffer->document;
     KmBytePos begv = km_anchor_get(view->buffer->begv);
     KmBytePos zv = km_anchor_get(view->buffer->zv);
+    KmBytePos origin = accessible_search_origin(loop, view);
     uint8_t *text;
     size_t len = zv.v - begv.v;
-    size_t relative_start = start < begv.v ? 0 : start - begv.v;
+    KmBytePos point = km_anchor_get(view->point);
+    size_t relative_origin = origin.v - begv.v;
+    size_t relative_point = point.v <= begv.v
+                                ? 0
+                                : point.v >= zv.v ? len : point.v - begv.v;
     size_t found = SIZE_MAX;
+    bool continue_wrapped = !repeat && loop->search_wrapped;
+    bool wrapped = continue_wrapped;
 
     if (loop->search_len == 0) {
         loop->search_failed = false;
-        return km_anchor_set(view->point, loop->search_origin, error);
+        loop->search_wrapped = false;
+        return km_anchor_set(view->point, origin, error);
+    }
+    if (loop->search_len > len) {
+        loop->search_failed = true;
+        return KM_OK;
     }
     text = len == 0 ? NULL : (uint8_t *)malloc(len);
     if (len != 0 && text == NULL) return fail(error, KM_ERR_OOM, "search");
@@ -2211,28 +2255,75 @@ static KmStatus search_from(KmCommandLoop *loop, KmView *view,
             return status;
         }
     }
-    if (relative_start > len) relative_start = len;
     /* ponytail: byte scan; add a search index only after profiling demands it. */
-    for (size_t pass = 0; pass < 2 && found == SIZE_MAX; ++pass) {
-        size_t scan = pass == 0 ? relative_start : 0;
-        size_t limit = pass == 0 ? len : relative_start;
+    if (loop->search_forward) {
+        size_t max_start = len - loop->search_len;
+        size_t start = repeat && relative_point < len
+                           ? relative_point + 1
+                           : continue_wrapped ? relative_point
+                                              : relative_origin;
+        size_t scan;
 
-        while (scan <= limit && loop->search_len <= len - scan) {
-            KmBytePos candidate = {begv.v + scan};
-            KmBytePos candidate_end = {candidate.v + loop->search_len};
-            if (candidate_end.v <= zv.v &&
-                km_document_is_boundary(document, candidate) &&
-                km_document_is_boundary(document, candidate_end) &&
-                memcmp(text + scan, loop->search_query,
-                       loop->search_len) == 0) {
+        for (scan = start; scan <= max_start; ++scan) {
+            if (search_match_at(loop, document, text, begv, zv, scan)) {
                 found = scan;
                 break;
             }
-            ++scan;
+        }
+        if ((repeat || continue_wrapped) && found == SIZE_MAX) {
+            for (scan = 0; scan < start && scan <= max_start; ++scan) {
+                if (search_match_at(loop, document, text, begv, zv, scan)) {
+                    found = scan;
+                    wrapped = true;
+                    break;
+                }
+            }
+        }
+    } else {
+        size_t max_start = len - loop->search_len;
+        size_t first = 0;
+        bool has_first;
+
+        if (repeat) {
+            has_first = relative_point != 0;
+            if (has_first) first = relative_point - 1;
+        } else if (continue_wrapped) {
+            has_first = true;
+            first = relative_point;
+        } else {
+            has_first = relative_origin >= loop->search_len;
+            if (has_first) first = relative_origin - loop->search_len;
+        }
+        if (has_first) {
+            size_t scan = first < max_start ? first : max_start;
+            first = scan;
+            for (;;) {
+                if (search_match_at(loop, document, text, begv, zv, scan)) {
+                    found = scan;
+                    break;
+                }
+                if (scan == 0) break;
+                --scan;
+            }
+        }
+        if ((repeat || continue_wrapped) && found == SIZE_MAX &&
+            (!has_first || first < max_start)) {
+            size_t scan = max_start;
+            for (;;) {
+                if ((!has_first || scan > first) &&
+                    search_match_at(loop, document, text, begv, zv, scan)) {
+                    found = scan;
+                    wrapped = true;
+                    break;
+                }
+                if (scan == 0 || (has_first && scan <= first)) break;
+                --scan;
+            }
         }
     }
     free(text);
     loop->search_failed = found == SIZE_MAX;
+    loop->search_wrapped = wrapped && (found != SIZE_MAX || continue_wrapped);
     if (found == SIZE_MAX) return KM_OK;
     return km_anchor_set(view->point, (KmBytePos){begv.v + found}, error);
 }
@@ -2265,7 +2356,7 @@ static KmStatus append_search_query(KmCommandLoop *loop, KmView *view,
     }
     if (len != 0) memcpy(loop->search_query + loop->search_len, text, len);
     loop->search_len = required;
-    return search_from(loop, view, loop->search_origin.v, error);
+    return search_query(loop, view, false, error);
 }
 
 static KmStatus search_backspace(KmCommandLoop *loop, KmView *view,
@@ -2277,7 +2368,7 @@ static KmStatus search_backspace(KmCommandLoop *loop, KmView *view,
            (loop->search_query[loop->search_len] & 0xc0u) == 0x80u) {
         --loop->search_len;
     }
-    return search_from(loop, view, loop->search_origin.v, error);
+    return search_query(loop, view, false, error);
 }
 
 static KmStatus dispatch_search(KmCommandLoop *loop, KmView *view,
@@ -2285,18 +2376,20 @@ static KmStatus dispatch_search(KmCommandLoop *loop, KmView *view,
 {
     if (event->kind == KM_EVENT_KEY &&
         is_quit_key(event->codepoint, event->modifiers)) {
-        KmStatus status = km_anchor_set(view->point, loop->search_origin, error);
+        KmStatus status = km_anchor_set(
+            view->point, accessible_search_origin(loop, view), error);
         loop->search_active = false;
         loop->search_failed = false;
+        loop->search_wrapped = false;
         view->buffer->mark_active = false;
         loop->quit_requested = true;
         return status;
     }
-    if (event->kind == KM_EVENT_KEY && event->codepoint == 's' &&
+    if (event->kind == KM_EVENT_KEY &&
+        (event->codepoint == 's' || event->codepoint == 'r') &&
         event->modifiers == KM_MOD_CTRL) {
-        size_t start = km_anchor_get(view->point).v;
-        if (start < km_anchor_get(view->buffer->zv).v) ++start;
-        return search_from(loop, view, start, error);
+        loop->search_forward = event->codepoint == 's';
+        return search_query(loop, view, true, error);
     }
     if (event->kind == KM_EVENT_KEY && event->codepoint == 0x7f &&
         event->modifiers == 0) {
@@ -2306,7 +2399,10 @@ static KmStatus dispatch_search(KmCommandLoop *loop, KmView *view,
         event->text_len == 0 && event->codepoint == '\n') {
         loop->search_active = false;
         loop->search_failed = false;
-        loop->last_command = KM_COMMAND_SEARCH_FORWARD;
+        loop->search_wrapped = false;
+        loop->last_command = loop->search_forward
+                                 ? KM_COMMAND_SEARCH_FORWARD
+                                 : KM_COMMAND_SEARCH_BACKWARD;
         return KM_OK;
     }
     if (event->kind == KM_EVENT_TEXT) {
@@ -2425,7 +2521,9 @@ static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
         loop->search_origin = km_anchor_get(view->point);
         loop->search_len = 0;
         loop->search_active = true;
+        loop->search_forward = codepoint == 's';
         loop->search_failed = false;
+        loop->search_wrapped = false;
         return KM_OK;
     }
     if (key_trie[node].command == KM_INTERNAL_FIND_FILE) {
@@ -2517,9 +2615,13 @@ KmStatus km_command_loop_dispatch(KmCommandLoop *loop, KmView *view,
                  : 1;
     for (i = 0; i < repeat; ++i) {
         KmPromptKind prompt_kind = loop->prompt_kind;
+        bool search_active = loop->search_active;
         status = dispatch_one(loop, view, event, error);
         if (status != KM_OK) return status;
-        if (loop->prompt_kind != prompt_kind) break;
+        if (loop->prompt_kind != prompt_kind ||
+            loop->search_active != search_active) {
+            break;
+        }
         if (loop->request != KM_COMMAND_REQUEST_NONE &&
             !((loop->request == KM_COMMAND_REQUEST_COMPLETE_FILE ||
                loop->request == KM_COMMAND_REQUEST_COMPLETE_BUFFER) &&
@@ -2659,7 +2761,16 @@ void km_command_loop_format_prompt(const KmCommandLoop *loop,
     destination[0] = '\0';
     if (loop == NULL) return;
     if (loop->search_active) {
-        prefix = loop->search_failed ? "Failing I-search: " : "I-search: ";
+        if (loop->search_failed) {
+            prefix = loop->search_forward ? "Failing I-search: "
+                                          : "Failing I-search backward: ";
+        } else if (loop->search_wrapped) {
+            prefix = loop->search_forward ? "Wrapped I-search: "
+                                          : "Wrapped I-search backward: ";
+        } else {
+            prefix = loop->search_forward ? "I-search: "
+                                          : "I-search backward: ";
+        }
         text = loop->search_query;
         text_len = loop->search_len;
     } else {

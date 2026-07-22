@@ -126,10 +126,17 @@ static int run_probe(int terminate_with_signal, const char *path,
         static const unsigned char edit[] = {
             'a', 'b', 'c', 0x02, 0x04, 0x7f,
             0x18, 'u', 0x18, 0x12,
-            '\r', 0xe4, 0xb8, 0xad, 0x07, 'q',
-            0x18, 0x03, 'y',
+            '\r', 0xe4, 0xb8, 0xad, 'q',
+            0x12, 0xe4, 0xb8, 0xad,
         };
+        static const unsigned char exit_keys[] = {0x07, 0x18, 0x03, 'y'};
         if (write(master, edit, sizeof(edit)) != (ssize_t)sizeof(edit)) {
+            goto kill_child;
+        }
+        if (wait_for_text(master, output, sizeof(output), &output_len,
+                          "I-search backward", 2000) != 0 ||
+            write(master, exit_keys, sizeof(exit_keys)) !=
+                (ssize_t)sizeof(exit_keys)) {
             goto kill_child;
         }
         if (wait_for_text(master, output, sizeof(output), &output_len,

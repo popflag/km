@@ -850,6 +850,8 @@ static void test_incremental_search(void)
     KmView *view = NULL;
     KmCommandLoop *loop = NULL;
     KmError error;
+    KmRevision revision;
+    KmStateId state;
     char prompt[64];
 
     CHECK(km_view_create(buffer, &view, &error) == KM_OK);
@@ -860,10 +862,24 @@ static void test_incremental_search(void)
     CHECK(km_view_point(view).v == 4);
     km_command_loop_format_prompt(loop, prompt, sizeof(prompt));
     CHECK(strstr(prompt, "I-search: ") == prompt);
-    CHECK(dispatch_key(loop, view, 's', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key_repeat(loop, view, 's', KM_MOD_CTRL, 2, &error) ==
+          KM_OK);
+    CHECK(km_view_point(view).v == 4);
+    km_command_loop_format_prompt(loop, prompt, sizeof(prompt));
+    CHECK(strstr(prompt, "Wrapped I-search: ") == prompt);
+    CHECK(dispatch_text(loop, view, ' ', 1, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 4);
+    km_command_loop_format_prompt(loop, prompt, sizeof(prompt));
+    CHECK(strstr(prompt, "Wrapped I-search: ") == prompt);
+    CHECK(dispatch_key(loop, view, 0x7f, 0, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 4);
+    CHECK(dispatch_key(loop, view, 'r', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(km_view_point(view).v == 12);
+    km_command_loop_format_prompt(loop, prompt, sizeof(prompt));
+    CHECK(strstr(prompt, "Wrapped I-search backward: ") == prompt);
     CHECK(dispatch_key(loop, view, 0x7f, 0, &error) == KM_OK);
     CHECK(km_view_point(view).v == 0);
+    CHECK(dispatch_key(loop, view, 's', KM_MOD_CTRL, &error) == KM_OK);
     CHECK(dispatch_text_block(loop, view, word, sizeof(word), &error) == KM_OK);
     CHECK(km_view_point(view).v == 8);
     CHECK(dispatch_key(loop, view, 'g', KM_MOD_CTRL, &error) == KM_OK);
@@ -876,6 +892,73 @@ static void test_incremental_search(void)
     CHECK(!km_command_loop_search_active(loop));
     CHECK(km_view_point(view).v == 8);
     CHECK(km_command_loop_last_command(loop) == KM_COMMAND_SEARCH_FORWARD);
+
+    CHECK(km_view_set_point(view, (KmBytePos){sizeof(text)}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'r', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, 0x4e2d, 1, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 12);
+    km_command_loop_format_prompt(loop, prompt, sizeof(prompt));
+    CHECK(strstr(prompt, "I-search backward: ") == prompt);
+    CHECK(dispatch_key(loop, view, 'r', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 4);
+    CHECK(dispatch_key(loop, view, 'r', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 12);
+    km_command_loop_format_prompt(loop, prompt, sizeof(prompt));
+    CHECK(strstr(prompt, "Wrapped I-search backward: ") == prompt);
+    revision = km_document_revision(km_buffer_document(buffer));
+    state = km_document_history_state(km_buffer_document(buffer));
+    CHECK(dispatch_text(loop, view, '\n', 2, &error) == KM_OK);
+    CHECK(km_document_revision(km_buffer_document(buffer)) == revision);
+    CHECK(km_document_history_state(km_buffer_document(buffer)) == state);
+    check_text(buffer, text, sizeof(text));
+    CHECK(km_command_loop_last_command(loop) == KM_COMMAND_SEARCH_BACKWARD);
+
+    CHECK(km_buffer_narrow(buffer, (KmBytePos){4},
+                           (KmBytePos){sizeof(text)}, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){sizeof(text)}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'r', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, 0x4e2d, 1, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 12);
+    CHECK(dispatch_key(loop, view, 'r', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 4);
+    CHECK(dispatch_key(loop, view, 'r', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 12);
+    CHECK(dispatch_key(loop, view, 'g', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_point(view).v == sizeof(text));
+    km_command_loop_clear_quit(loop);
+
+    CHECK(km_buffer_widen(buffer, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){4}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 's', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, 0x4e2d, 1, &error) == KM_OK);
+    CHECK(km_buffer_narrow(buffer, (KmBytePos){12},
+                           (KmBytePos){sizeof(text)}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 's', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 12);
+    CHECK(dispatch_key(loop, view, 0x7f, 0, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 12);
+    CHECK(dispatch_key(loop, view, 'g', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_point(view).v == 12);
+    km_command_loop_clear_quit(loop);
+
+    CHECK(km_view_set_point(view, (KmBytePos){sizeof(text)}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 's', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, 'z', 1, &error) == KM_OK);
+    km_command_loop_format_prompt(loop, prompt, sizeof(prompt));
+    CHECK(strstr(prompt, "Failing I-search: ") == prompt);
+    CHECK(dispatch_key(loop, view, 'g', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(km_view_point(view).v == sizeof(text));
+    km_command_loop_clear_quit(loop);
+
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_text_block(loop, view,
+                              (const uint8_t *)"isearch-backward", 16,
+                              &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_command_loop_search_active(loop));
+    km_command_loop_format_prompt(loop, prompt, sizeof(prompt));
+    CHECK(strstr(prompt, "I-search backward: ") == prompt);
+    CHECK(dispatch_key(loop, view, 'g', KM_MOD_CTRL, &error) == KM_OK);
     km_command_loop_destroy(loop);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
