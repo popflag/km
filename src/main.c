@@ -1,4 +1,5 @@
 #include "layout.h"
+#include "configuration.h"
 #include "file.h"
 #include "platform.h"
 
@@ -164,6 +165,16 @@ static bool any_modified_buffer(const AppBuffers *buffers)
         if (km_buffer_is_modified(buffers->items[i].buffer)) return true;
     }
     return false;
+}
+
+static void set_global_display_line_numbers(AppBuffers *buffers, bool enabled)
+{
+    size_t i;
+
+    km_config_set_global_display_line_numbers_mode(enabled);
+    for (i = 0; i < buffers->count; ++i) {
+        km_buffer_set_line_numbers_visible(buffers->items[i].buffer, enabled);
+    }
 }
 
 static KmStatus save_modified_files(AppBuffers *buffers, KmError *error)
@@ -337,6 +348,11 @@ int main(int argc, char **argv)
     KmError core_error;
     int result = 1;
 
+    if (km_configuration_validate(&core_error) != KM_OK) {
+        set_core_error(platform_error, sizeof(platform_error), &core_error);
+        fprintf(stderr, "km: %s\n", platform_error);
+        return 1;
+    }
     if (km_path_from_command_line(argc, argv, &path, &core_error) != KM_OK) {
         set_core_error(platform_error, sizeof(platform_error), &core_error);
         fprintf(stderr, "usage: %s [file]\nkm: %s\n", argv[0], platform_error);
@@ -578,6 +594,12 @@ int main(int argc, char **argv)
             if (status != KM_OK) {
                 set_core_error(message, sizeof(message), &core_error);
             }
+            break;
+        }
+        case KM_COMMAND_REQUEST_GLOBAL_DISPLAY_LINE_NUMBERS_MODE: {
+            bool enabled = km_command_loop_request_argument(loop) > 0;
+            km_command_loop_clear_request(loop);
+            set_global_display_line_numbers(&buffers, enabled);
             break;
         }
         case KM_COMMAND_REQUEST_EXIT:

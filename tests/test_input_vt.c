@@ -1,4 +1,5 @@
 #include "input_vt.h"
+#include "configuration.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -240,14 +241,18 @@ static void test_paste_errors(void)
 {
     static const uint8_t start[] = {0x1b, '[', '2', '0', '0', '~'};
     static const uint8_t end[] = {0x1b, '[', '2', '0', '1', '~'};
-    size_t payload = 1024u * 1024u + 1u;
-    size_t len = sizeof(start) + payload + sizeof(end);
-    uint8_t *bytes = (uint8_t *)malloc(len);
+    size_t payload;
+    size_t len;
+    uint8_t *bytes;
     KmInputVt *input = NULL;
     KmError error;
     size_t offset = 0;
     KmStatus status = KM_OK;
 
+    if (km_config_max_paste_bytes() > 16u * 1024u * 1024u) return;
+    payload = km_config_max_paste_bytes() + 1u;
+    len = sizeof(start) + payload + sizeof(end);
+    bytes = (uint8_t *)malloc(len);
     CHECK(bytes != NULL);
     memcpy(bytes, start, sizeof(start));
     memset(bytes + sizeof(start), 'x', payload);
@@ -266,7 +271,7 @@ static void test_paste_errors(void)
     }
     CHECK(status == KM_ERR_INVALID && offset == len);
     CHECK(error.operation != NULL &&
-          strstr(error.operation, "exceeds 1 MiB") != NULL);
+          strstr(error.operation, "configured limit") != NULL);
     {
         KmEvent event;
         size_t consumed = 0;

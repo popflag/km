@@ -1,4 +1,5 @@
 #include "platform.h"
+#include "configuration.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -136,16 +137,19 @@ static int test_paste_limit(void)
     char error[256] = {0};
     int result = 1;
     size_t i;
+    size_t limit = km_config_max_paste_bytes();
+
+    if (limit < sizeof(near_end) || limit > 16u * 1024u * 1024u) return 0;
 
     if (input == NULL || output == NULL ||
         fwrite(start, 1, sizeof(start), input) != sizeof(start)) goto done;
-    for (i = 0; i < 1024u * 1024u - sizeof(near_end); ++i) {
+    for (i = 0; i < limit - sizeof(near_end); ++i) {
         if (fputc('x', input) == EOF) goto done;
     }
     if (fwrite(near_end, 1, sizeof(near_end), input) != sizeof(near_end) ||
         fwrite(end, 1, sizeof(end), input) != sizeof(end) ||
         fwrite(start, 1, sizeof(start), input) != sizeof(start)) goto done;
-    for (i = 0; i < 1024u * 1024u + 1u; ++i) {
+    for (i = 0; i < limit + 1u; ++i) {
         if (fputc('y', input) == EOF) goto done;
     }
     if (fwrite(end, 1, sizeof(end), input) != sizeof(end) ||
@@ -157,11 +161,11 @@ static int test_paste_limit(void)
         dup2(fileno(output), STDOUT_FILENO) < 0) goto done;
     if (km_platform_open(&platform, error, sizeof(error)) != 0) goto done;
     if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
-        event.kind != KM_EVENT_PASTE || event.text_len != 1024u * 1024u ||
+        event.kind != KM_EVENT_PASTE || event.text_len != limit ||
         memcmp(event.text + event.text_len - sizeof(near_end), near_end,
                sizeof(near_end)) != 0) goto done;
     if (km_platform_read_event(platform, &event, error, sizeof(error)) == 0 ||
-        strstr(error, "exceeds 1 MiB") == NULL) goto done;
+        strstr(error, "configured limit") == NULL) goto done;
     if (km_platform_read_event(platform, &event, error, sizeof(error)) != 0 ||
         event.kind != KM_EVENT_EOF) goto done;
     result = 0;

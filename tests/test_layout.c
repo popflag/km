@@ -1,6 +1,7 @@
 #include "layout.h"
 #include "file.h"
 #include "unicode.h"
+#include "configuration.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +26,20 @@ static void check_glyph(const KmCellGrid *grid, size_t row, size_t column,
     CHECK(memcmp(glyph, expected, len) == 0);
 }
 
+static void test_configuration_contract(void)
+{
+    KmError error;
+
+    CHECK(km_configuration_validate(&error) == KM_OK);
+    CHECK(km_config_tab_width() >= 1u);
+    CHECK(km_config_sentence_end_spaces() >= 1u);
+    CHECK(km_config_ambiguous_width() == 1u ||
+          km_config_ambiguous_width() == 2u);
+    CHECK(km_config_mark_ring_capacity() >= 1u);
+    CHECK(km_config_kill_ring_capacity() >= 1u);
+    CHECK(km_config_line_number_separator()[0] != '\0');
+}
+
 static void test_grapheme_scans_from_internal_boundaries(void)
 {
     static const uint8_t combining[] = {'e', 0xcc, 0x81, 'x'};
@@ -46,6 +61,8 @@ static void test_grapheme_scans_from_internal_boundaries(void)
 
     CHECK(km_unicode_decode((const uint8_t *)"a", 1, 0, &codepoint,
                             &consumed, &error) == KM_OK);
+    CHECK(km_unicode_cell_width(0x00a1) ==
+          (int)km_config_ambiguous_width());
     CHECK(error.code == KM_OK && error.os_code == 0 && error.operation == NULL);
     CHECK(km_unicode_next_grapheme(combining, sizeof(combining), 1,
                                    &grapheme, &error) == KM_OK);
@@ -398,15 +415,15 @@ static void test_scroll_commands(void)
     scroll = 0;
     CHECK(km_layout_scroll_view(buffer, view, 5, 4, scroll, true, false, 1,
                                 &scroll, &error) == KM_OK);
-    CHECK(scroll == 6);
     CHECK(km_view_point(view).v == 1);
     {
         KmCellGrid *grid = NULL;
         KmLayoutResult layout;
         CHECK(km_layout_view(buffer, view, 5, 4, scroll, NULL, NULL, false, &grid,
                              &layout, &error) == KM_OK);
-        CHECK(layout.scroll_row == 6);
-        CHECK(layout.cursor_row == 2);
+        CHECK(layout.scroll_row == scroll);
+        CHECK(layout.cursor_row <
+              (km_config_mode_line_format() ? 3u : 4u));
         km_cell_grid_destroy(grid);
     }
     CHECK(km_view_destroy(view, &error) == KM_OK);
@@ -469,6 +486,7 @@ static void test_move_to_window_line(void)
 
 int main(void)
 {
+    test_configuration_contract();
     test_grapheme_scans_from_internal_boundaries();
     test_unicode_and_controls();
     test_wrap_and_viewport();

@@ -1,4 +1,5 @@
 #include "layout.h"
+#include "configuration.h"
 
 #include "unicode.h"
 
@@ -83,15 +84,19 @@ static void record_cursor(KmLayoutPass *pass, size_t offset,
 static KmStatus draw_line_number(KmLayoutPass *pass, bool numbered,
                                  KmError *error)
 {
-    static const uint8_t separator[] = {0xe2, 0x94, 0x82};
+    const uint8_t *separator =
+        (const uint8_t *)km_config_line_number_separator();
+    size_t padding = km_config_line_number_padding();
     char digits[32];
     size_t digit_len = 0;
     size_t digit_offset = 0;
-    size_t number_columns = pass->gutter_width > 2
-                                ? pass->gutter_width - 2
+    size_t number_columns =
+        pass->gutter_width > padding + 1u
+                                ? pass->gutter_width - padding - 1u
                                 : 0;
-    size_t separator_column = pass->gutter_width > 1
-                                  ? pass->gutter_width - 2
+    size_t separator_column =
+        pass->gutter_width > padding
+                                  ? pass->gutter_width - padding - 1u
                                   : 0;
     size_t start = number_columns;
     size_t column;
@@ -129,7 +134,7 @@ static KmStatus draw_line_number(KmLayoutPass *pass, bool numbered,
             glyph = (const uint8_t *)&digits[digit_offset + column - start];
         } else if (column == separator_column) {
             glyph = separator;
-            glyph_len = sizeof(separator);
+            glyph_len = strlen((const char *)separator);
         }
         {
             KmStatus status = km_cell_grid_put(
@@ -218,7 +223,7 @@ static KmStatus record_inside_grapheme(KmLayoutPass *pass, size_t start,
         KmStatus status = km_unicode_decode(pass->text, end, scan, &codepoint,
                                             &consumed, error);
         if (status != KM_OK) return status;
-        codepoint_width = utf8proc_charwidth(codepoint);
+        codepoint_width = km_unicode_cell_width(codepoint);
         if (codepoint_width > 0 && (size_t)codepoint_width > prefix_width) {
             prefix_width = (size_t)codepoint_width;
         }
@@ -272,7 +277,8 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
             size_t spaces;
             record_cursor(pass, offset, pass->row, pass->column);
             select_region_style(pass, offset, offset + consumed);
-            spaces = 8u - (pass->hard_column % 8u);
+            spaces = km_config_tab_width() -
+                     (pass->hard_column % km_config_tab_width());
             while (spaces-- != 0) {
                 status = draw_ascii_cell(pass, ' ', error);
                 if (status != KM_OK) return status;
@@ -436,7 +442,8 @@ static KmStatus put_status(KmCellGrid *grid, size_t row, size_t columns,
 
 static size_t content_row_count(size_t rows)
 {
-    return rows > 2 ? rows - 2 : 1;
+    size_t chrome_rows = km_config_mode_line_format() ? 2u : 1u;
+    return rows > chrome_rows ? rows - chrome_rows : 1u;
 }
 
 static KmStatus line_number_base(const KmDocument *document, KmBytePos start,
@@ -486,7 +493,12 @@ static size_t line_number_gutter(const uint8_t *text, size_t len,
         value /= 10;
         ++digits;
     }
-    gutter = digits > SIZE_MAX - 3 ? SIZE_MAX : digits + 3;
+    if (km_config_line_number_padding() >
+        (SIZE_MAX - digits - 1u) / 2u) {
+        gutter = SIZE_MAX;
+    } else {
+        gutter = digits + km_config_line_number_padding() * 2u + 1u;
+    }
     if (columns <= 1) return 0;
     if (gutter >= columns) gutter = columns - 1;
     return gutter;
@@ -589,7 +601,23 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
     result.hard_line = line_base + pass.cursor_hard_line;
     result.hard_column = pass.cursor_hard_column;
 
-    if (rows > 2) {
+    if (!km_config_mode_line_format() && rows > 1) {
+        size_t echo_column = 0;
+        status = put_status_text(grid, rows - 1, columns, &echo_column,
+                                 message == NULL ? "" : message,
+                                 KM_STYLE_DEFAULT, error);
+        if (status != KM_OK) goto fail;
+        if (prompt_active) {
+            result.cursor_row = rows - 1;
+            result.cursor_column = echo_column < columns
+                                       ? echo_column
+                                       : columns - 1;
+            status = put_status_text(grid, rows - 1, columns, &echo_column,
+                                     completion == NULL ? "" : completion,
+                                     KM_STYLE_DEFAULT, error);
+            if (status != KM_OK) goto fail;
+        }
+    } else if (km_config_mode_line_format() && rows > 2) {
         size_t echo_column = 0;
         status = put_status(grid, rows - 2, columns, &result,
                             km_buffer_is_modified(buffer),
@@ -728,7 +756,10 @@ KmStatus km_layout_scroll_view(const KmBuffer *buffer, KmView *view,
         scroll_row = pass.cursor_row - content_rows + 1;
     }
     if (!has_argument) {
-        magnitude = content_rows > 2 ? (uint64_t)(content_rows - 2) : 1;
+        magnitude = content_rows > km_config_scroll_context_rows()
+                        ? (uint64_t)(content_rows -
+                                     km_config_scroll_context_rows())
+                        : 1;
     } else if (argument < 0) {
         forward = !forward;
         magnitude = (uint64_t)(-(argument + 1)) + 1u;

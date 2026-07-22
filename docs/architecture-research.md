@@ -40,7 +40,7 @@
   检查文件 identity，成功后才更新 `saved_state_id`。
 - 支持 code-point 左右移动/删除、按 cell column 的上下移动、行首/行尾、
   Buffer 边界、空白行分隔的段落移动、默认双空格规则的句子移动、`M-m`
-  首个非空白字符、16 项 Buffer-local mark ring、inactive mark、`C-u C-SPC`
+  首个非空白字符、默认 16 项 Buffer-local mark ring、inactive mark、`C-u C-SPC`
   mark 轮换、mark/region、`M-@`、`C-x h`、`C-w`、`M-w`、带正负 numeric
   prefix 的 `C-k`、`M-d`、
   `M-DEL`、`C-y`、`M-y`、`C-o`、`C-t`、`M-t`、`C-x C-t`、`M-\`、
@@ -72,7 +72,9 @@
   文件名会被候选枚举跳过。
 - 正文默认显示 document-global logical line number gutter；soft-wrap continuation
   不重复行号。gutter 使用独立 dim style，并以竖线和一格留白分隔正文；
-  `display-line-numbers-mode` 作为 Buffer-local command 控制显示。行号宽度参与
+  `display-line-numbers-mode` 作为 Buffer-local command 控制显示，
+  `global-display-line-numbers-mode` 按 Emacs 的全局 minor mode 语义控制所有
+  现有及后续 Buffer。行号宽度参与
   两次 layout pass 的 wrap/cursor/scroll 计算，关闭时完全退出正文宽度计算，
   终端太窄时优先保留一个正文 cell。mode line 使用独立的 bold+reverse style，
   继续显示 modified、Buffer 名、region 与 line/column；echo area/minibuffer
@@ -87,7 +89,7 @@
   指定从顶部或底部计算的屏幕行。`M-r` 按同一 visual-row/gutter/wrap 模型移动
   point。`M-g g` 和 `M-g c` 使用 document-global 位置，但目标在 narrowing 外
   时拒绝移动，不隐式 widen。
-- kill ring 保留最近 60 个 entry；连续前向 kill 追加、连续后向 kill 前置，
+- kill ring 默认保留最近 60 个 entry；连续前向 kill 追加、连续后向 kill 前置，
   `M-y` 只在紧随 `C-y`/`M-y` 且 Document revision 未改变时替换上一段 yank。
   完整 Emacs undo 遍历仍需差分测试后扩展。
 - `C-y` 将 inactive mark 放在 yank 起点；`C-t 0` 交换 point 与 mark 所指字符，
@@ -98,6 +100,16 @@
   多 code point 展开的 full special casing 和 locale-sensitive casing 尚未承诺。
 - POSIX 输入识别 ESC Meta、常见 CSI/SS3 方向键和 bracketed paste；Win32
   record 输入识别对应 named keys，但按平台限制不声称有 paste boundary。
+- 根目录 `config.h` 以 `setq(...)`、mode 调用和 key binding 调用等 C 语句
+  集中保存编译期偏好，包括默认 Buffer 行为、tab/width policy、ring 容量、
+  滚动上下文、VT 样式和输入容限；键位保留内置 Emacs 默认值，`config.h` 只写
+  用户需要新增或覆盖的绑定。修改后重新构建生效，不增加外置配置解析、搜索路径
+  或运行时重载。UTF-8 合法性、文件 identity 与安全保存等数据安全契约不允许
+  通过配置关闭。
+- 配置入口使用 Emacs 名称的 C 转写：`global_display_line_numbers_mode(1)`
+  对应 `global-display-line-numbers-mode`。Emacs 没有 `mode-line-mode` 命令，
+  因而 mode line 使用变量形式 `setq(mode_line_format, 1)`；当前只实现
+  `mode-line-format` 的 nil/非 nil 可见性子集。
 - Renderer 当前仍执行完整 CellGrid frame 输出；front/back row diff 是下一
   个纯性能步骤，不影响上述编辑和数据安全契约。
 
@@ -196,6 +208,7 @@ Base buffer narrow 到 `[2,5)` 后，其 indirect buffer 仍观察到完整范�
 | A19  | 待验证 | GNU Emacs `undo`、`undo-only`、`undo-redo` 的精确遍历与合并行为 |
 | A20  | 待验证 | Windows VT input 下 bracketed paste、鼠标、resize 和修饰键组合  |
 | A21  | 采用   | QEmacs 作为大文件/mode/TTY 参考，不改变首版 gap/transaction/CellGrid；固定源码资料见第 23 节 |
+| A22  | 采用   | 使用单个 C 语句式 `config.h` 提供编译期偏好；不实现外置配置解析或运行时重载 |
 
 ## 4. 总体架构
 
@@ -633,7 +646,7 @@ typedef struct {
 } KmEgcRec;
 ```
 
-Cache key 至少包含 Document revision、width policy 和 viewport width。当前 tabstop 固定为 8；增加配置后再将 tab width 纳入 key。编辑后直接重建受影响 hard line；超长单行成为实测瓶颈后，再在已确认 EGC boundary 增加稀疏 checkpoint。
+Cache key 至少包含 Document revision、width policy、配置的 tab width 和 viewport width。编辑后直接重建受影响 hard line；超长单行成为实测瓶颈后，再在已确认 EGC boundary 增加稀疏 checkpoint。
 
 ### 10.4 Point 位于 EGC 内部
 
@@ -652,7 +665,7 @@ Cache key 至少包含 Document revision、width policy 和 viewport width。当
 Unicode 不规定一个 EGC 在所有终端和字体中占多少 cell。Width 必须是显式 profile：
 
 ```text
-tab: 8 - (hard_line_col % 8)
+tab: tab_width - (hard_line_col % tab_width)，值来自 `config.h`
 ordinary EGC: max(positive utf8proc_charwidth(codepoint))
 combining-only EGC: 1，并用 dotted-circle 或 replacement glyph 显示
 contains ZWJ / VS16 / RI flag pair: 2
@@ -663,7 +676,7 @@ C0/DEL/control: 转义为 ^X、^? 或 replacement，绝不原样输出到 termin
 
 Control 的替代文本和 width 必须由同一个函数同时返回：除 tab/newline 外，C0 与 DEL 使用两格的 `^X`/`^?`；其他不可打印字符若使用 replacement glyph，则 width 等于该 glyph 的实际 layout width。不能先按原 control 的 `utf8proc_charwidth` 记 0，再输出两格文本。
 
-当前 tabstop 固定为 8，并检查列加法溢出。可配置 tabstop 是未来功能；增加时使用 `KmCellCol`、要求 `tabstop >= 1`，并覆盖大于 255 的值。不能把 EGC 内各 code point width 相加。该策略是产品约定，需要真实终端矩阵校准；不是 UAX #11 的直接结论。
+tab width 由 `config.h` 编译期配置并检查列加法溢出，要求 `tab_width >= 1`；布局与按列移动使用同一值。不能把 EGC 内各 code point width 相加。该策略是产品约定，需要真实终端矩阵校准；不是 UAX #11 的直接结论。
 
 ### 10.6 Hard line 与 soft wrap
 
@@ -1071,7 +1084,8 @@ point。构建程序自重建时必须保留 bootstrap 所用编译器和 C17 �
 - 测试 combining、长 RI run、ZWJ emoji、VS15/16、CJK、ambiguous、孤立 combining、NUL、control 和 tab。
 - Width golden 同时断言 EGC、cell span、wrap、cursor mapping 和 hit-test。
 - 控制字符 golden 同时比较替代 glyph bytes 和声明 width，覆盖 `^@`、`^G`、`^?`。
-- 覆盖固定 tabstop=8 的 cell span；引入配置入口时再增加 `tabstop=0` 拒绝和 `tabstop=256` 测试。
+- 覆盖所配置 tab width 的 cell span；配置初始化拒绝 tabstop=0，tab width 使用
+  `size_t` 算术而不截断为 8-bit。
 
 ### 19.3 Command 差分
 

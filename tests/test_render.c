@@ -1,4 +1,5 @@
 #include "render.h"
+#include "configuration.h"
 
 #include "utf8proc.h"
 
@@ -93,7 +94,9 @@ static void test_interactive_frame(void)
     KmCellGrid *grid = NULL;
     KmError error;
     char *output;
+    char *styled;
     size_t output_len;
+    size_t styled_len;
 
     CHECK(km_cell_grid_create(2, 4, &grid, &error) == KM_OK);
     CHECK(km_cell_grid_put(grid, 1, 3, (const uint8_t *)"x", 1, 1, 0,
@@ -107,9 +110,19 @@ static void test_interactive_frame(void)
     CHECK(km_cell_grid_encode_frame_vt(grid, 1, 3, &output, &output_len,
                                        &error) == KM_OK);
     CHECK(strstr(output, "\x1b[2;1H   x") != NULL);
-    CHECK(strstr(output,
-                 "\x1b[1;1H\x1b[0;7mr\x1b[0;2ml\x1b[0;1;7mm\x1b[0m") !=
-          NULL);
+    styled_len = strlen("\x1b[1;1H") + strlen(km_config_style_region()) +
+                 strlen(km_config_style_line_number()) +
+                 strlen(km_config_style_mode_line()) +
+                 strlen(km_config_style_default()) + 3u;
+    styled = (char *)malloc(styled_len + 1u);
+    CHECK(styled != NULL);
+    CHECK((size_t)snprintf(styled, styled_len + 1u, "%s%sr%sl%sm%s",
+                           "\x1b[1;1H", km_config_style_region(),
+                           km_config_style_line_number(),
+                           km_config_style_mode_line(),
+                           km_config_style_default()) == styled_len);
+    CHECK(strstr(output, styled) != NULL);
+    free(styled);
     CHECK(strstr(output, "\x1b[2;4H\x1b[?25h") != NULL);
     CHECK(output_len != 0 && output[output_len - 1] == 'h');
     CHECK(memchr(output, '\n', output_len) == NULL);

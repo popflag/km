@@ -1,9 +1,9 @@
 #include "input_vt.h"
+#include "configuration.h"
 
 #include <stdlib.h>
 #include <string.h>
 
-#define KM_MAX_PASTE_BYTES (1024u * 1024u)
 #define KM_VT_SEQUENCE_CAP 16u
 
 typedef enum {
@@ -198,7 +198,7 @@ static bool finish_sequence(KmInputVt *input, KmInputVtState state,
 
 static void append_paste_byte(KmInputVt *input, uint8_t byte)
 {
-    const size_t limit = KM_MAX_PASTE_BYTES + 6u;
+    const size_t limit = km_config_max_paste_bytes() + 6u;
 
     if (input->paste_error != KM_PASTE_ERROR_NONE) return;
     if (input->paste_len == limit) {
@@ -206,7 +206,11 @@ static void append_paste_byte(KmInputVt *input, uint8_t byte)
         return;
     }
     if (input->paste_len == input->paste_cap) {
-        size_t capacity = input->paste_cap == 0 ? 256 : input->paste_cap * 2;
+        size_t capacity = input->paste_cap == 0
+                              ? 256u
+                              : (input->paste_cap > limit / 2u
+                                     ? limit
+                                     : input->paste_cap * 2u);
         uint8_t *paste;
 
         if (capacity > limit) capacity = limit;
@@ -238,10 +242,11 @@ static KmStatus process_paste(KmInputVt *input, uint8_t byte, KmEvent *event,
     }
     if (input->paste_error == KM_PASTE_ERROR_LIMIT ||
         input->paste_len < sizeof(end_marker) ||
-        input->paste_len - sizeof(end_marker) > KM_MAX_PASTE_BYTES) {
+        input->paste_len - sizeof(end_marker) >
+            km_config_max_paste_bytes()) {
         input->paste_len = 0;
         return fail(error, KM_ERR_INVALID,
-                    "read paste: input exceeds 1 MiB");
+                    "read paste: input exceeds configured limit");
     }
     input->paste_len -= sizeof(end_marker);
     {

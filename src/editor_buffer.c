@@ -1,5 +1,6 @@
 #include "editor_internal.h"
 
+#include "configuration.h"
 #include "file.h"
 #include "unicode.h"
 
@@ -81,8 +82,9 @@ void commit_mark(KmBuffer *buffer, KmMarkPlan *plan, bool active)
 {
     (void)km_anchor_set(buffer->mark, plan->position, NULL);
     if (plan->saved_mark != NULL) {
-        if (buffer->mark_ring_count == KM_MARK_RING_MAX) {
-            km_anchor_destroy(buffer->mark_ring[KM_MARK_RING_MAX - 1]);
+        if (buffer->mark_ring_count == km_config_mark_ring_capacity()) {
+            km_anchor_destroy(
+                buffer->mark_ring[km_config_mark_ring_capacity() - 1]);
         } else {
             ++buffer->mark_ring_count;
         }
@@ -416,7 +418,7 @@ static KmStatus scan_sentence_forward(const uint8_t *text, size_t len,
                 text[spaces] == '\f')) {
             ++spaces;
         }
-        if (spaces - after >= 2) {
+        if (spaces - after >= km_config_sentence_end_spaces()) {
             *out_position = after;
             return KM_OK;
         }
@@ -695,7 +697,7 @@ static KmStatus grapheme_prefix_width(const uint8_t *text, size_t end,
         KmStatus status = km_unicode_decode(text, end, scan, &codepoint,
                                             &consumed, error);
         if (status != KM_OK) return status;
-        codepoint_width = utf8proc_charwidth(codepoint);
+        codepoint_width = km_unicode_cell_width(codepoint);
         if (codepoint_width > 0 && (size_t)codepoint_width > width) {
             width = (size_t)codepoint_width;
         }
@@ -719,7 +721,9 @@ static KmStatus line_column_at(const uint8_t *text, size_t len,
                                             &consumed, error);
         if (status != KM_OK) return status;
         if (codepoint == '\t') {
-            status = add_column(&column, 8u - column % 8u, error);
+            status = add_column(
+                &column,
+                km_config_tab_width() - column % km_config_tab_width(), error);
             offset += consumed;
         } else if ((codepoint >= 0 && codepoint < 0x20) || codepoint == 0x7f) {
             status = add_column(&column, 2, error);
@@ -768,10 +772,12 @@ static KmStatus line_position_at_column(const uint8_t *text, size_t len,
         if (status != KM_OK) return status;
         next_offset = offset + consumed;
         if (codepoint == '\t') {
-            if (column > SIZE_MAX - (8u - column % 8u)) {
+            size_t tab_width =
+                km_config_tab_width() - column % km_config_tab_width();
+            if (column > SIZE_MAX - tab_width) {
                 return fail(error, KM_ERR_INVALID, "line column");
             }
-            next_column = column + (8u - column % 8u);
+            next_column = column + tab_width;
         } else if ((codepoint >= 0 && codepoint < 0x20) || codepoint == 0x7f) {
             if (column > SIZE_MAX - 2) {
                 return fail(error, KM_ERR_INVALID, "line column");
@@ -1070,6 +1076,19 @@ static KmStatus create_buffer_anchors(KmBuffer *buffer, KmError *error)
         buffer->zv = NULL;
         buffer->begv = NULL;
     }
+    if (status == KM_OK) {
+        if (km_config_mark_ring_capacity() >
+            SIZE_MAX / sizeof(*buffer->mark_ring)) {
+            destroy_anchors(buffer);
+            return fail(error, KM_ERR_OOM, "mark ring");
+        }
+        buffer->mark_ring = (KmAnchor **)calloc(
+            km_config_mark_ring_capacity(), sizeof(*buffer->mark_ring));
+        if (buffer->mark_ring == NULL) {
+            destroy_anchors(buffer);
+            status = fail(error, KM_ERR_OOM, "mark ring");
+        }
+    }
     return status;
 }
 
@@ -1122,8 +1141,9 @@ KmStatus km_buffer_create_base(const uint8_t *text, size_t len,
         return fail(error, KM_ERR_OOM, "buffer create");
     }
     buffer->document = document;
-    buffer->line_numbers_visible = true;
-    buffer->name = copy_name("*scratch*");
+    buffer->line_numbers_visible =
+        km_config_global_display_line_numbers_mode();
+    buffer->name = copy_name(km_config_scratch_buffer_name());
     if (buffer->name == NULL) {
         km_document_destroy(document);
         free(buffer);
@@ -1201,6 +1221,7 @@ KmStatus km_buffer_destroy(KmBuffer *buffer, KmError *error)
         return fail(error, KM_ERR_CONFLICT, "buffer destroy");
     }
     destroy_anchors(buffer);
+    free(buffer->mark_ring);
     if (buffer->base != NULL) {
         --buffer->base->indirect_count;
     } else {

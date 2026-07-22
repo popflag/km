@@ -70,6 +70,7 @@ static const char *toolchain_id(void)
 
 static const char *const km_sources[] = {
     "src/base.c",
+    "src/configuration.c",
     "src/document.c",
     "src/editor_buffer.c",
     "src/editor_command.c",
@@ -379,7 +380,7 @@ static bool build_executable(const char *name, const char *entry,
     if (with_platform && !require_file(KM_PLATFORM_SOURCE)) return false;
 
     const char *output = nob_temp_sprintf("build/%s%s", name, KM_EXE_SUFFIX);
-    const char *inputs[32];
+    const char *inputs[40];
     size_t input_count = 0;
     Nob_Cmd cmd = {0};
 
@@ -388,8 +389,10 @@ static bool build_executable(const char *name, const char *entry,
         if (nob_file_exists(sources[i])) inputs[input_count++] = sources[i];
     }
     if (with_platform) inputs[input_count++] = KM_PLATFORM_SOURCE;
+    inputs[input_count++] = "config.h";
     inputs[input_count++] = "src/base.h";
     inputs[input_count++] = "src/commands.def";
+    inputs[input_count++] = "src/configuration.h";
     inputs[input_count++] = "src/document.h";
     inputs[input_count++] = "src/editor.h";
     inputs[input_count++] = "src/editor_internal.h";
@@ -450,7 +453,7 @@ static bool build_test_document(void)
 static bool build_test_editor(void)
 {
     const char *sources[] = {
-        "src/base.c", "src/document.c", "src/editor_buffer.c",
+        "src/base.c", "src/configuration.c", "src/document.c", "src/editor_buffer.c",
         "src/editor_command.c", "src/unicode.c", "src/file_text.c",
         KM_FILE_SOURCE,
     };
@@ -461,7 +464,7 @@ static bool build_test_editor(void)
 static bool build_test_transcript(void)
 {
     const char *sources[] = {
-        "src/base.c", "src/document.c", "src/editor_buffer.c",
+        "src/base.c", "src/configuration.c", "src/document.c", "src/editor_buffer.c",
         "src/editor_command.c", "src/unicode.c", "src/file_text.c",
         KM_FILE_SOURCE,
     };
@@ -472,7 +475,7 @@ static bool build_test_transcript(void)
 static bool build_test_layout(void)
 {
     const char *sources[] = {
-        "src/base.c", "src/document.c", "src/editor_buffer.c",
+        "src/base.c", "src/configuration.c", "src/document.c", "src/editor_buffer.c",
         "src/editor_command.c", "src/file_text.c", "src/layout.c",
         "src/render.c", "src/unicode.c", KM_FILE_SOURCE,
     };
@@ -483,7 +486,7 @@ static bool build_test_layout(void)
 static bool build_test_platform(void)
 {
     const char *sources[] = {
-        "src/base.c", "src/input_vt.c", "src/render.c",
+        "src/base.c", "src/configuration.c", "src/input_vt.c", "src/render.c",
     };
     return build_executable("test_platform", "tests/test_platform.c",
                             sources, NOB_ARRAY_LEN(sources), true);
@@ -491,21 +494,27 @@ static bool build_test_platform(void)
 
 static bool build_test_input_vt(void)
 {
-    const char *sources[] = {"src/base.c", "src/input_vt.c"};
+    const char *sources[] = {
+        "src/base.c", "src/configuration.c", "src/input_vt.c",
+    };
     return build_executable("test_input_vt", "tests/test_input_vt.c",
                             sources, NOB_ARRAY_LEN(sources), false);
 }
 
 static bool build_test_render(void)
 {
-    const char *sources[] = {"src/base.c", "src/render.c"};
+    const char *sources[] = {
+        "src/base.c", "src/configuration.c", "src/render.c",
+    };
     return build_executable("test_render", "tests/test_render.c",
                             sources, NOB_ARRAY_LEN(sources), false);
 }
 
 static bool build_test_grapheme(void)
 {
-    const char *sources[] = {"src/base.c", "src/unicode.c"};
+    const char *sources[] = {
+        "src/base.c", "src/configuration.c", "src/unicode.c",
+    };
     return build_executable("test_grapheme", "tests/test_grapheme.c",
                             sources, NOB_ARRAY_LEN(sources), false);
 }
@@ -513,7 +522,7 @@ static bool build_test_grapheme(void)
 static bool build_test_file(void)
 {
     const char *sources[] = {
-        "src/base.c", "src/document.c", "src/editor_buffer.c",
+        "src/base.c", "src/configuration.c", "src/document.c", "src/editor_buffer.c",
         "src/editor_command.c", "src/unicode.c", "src/file_text.c",
         KM_FILE_SOURCE,
     };
@@ -524,7 +533,7 @@ static bool build_test_file(void)
 static bool build_bench_layout(void)
 {
     const char *sources[] = {
-        "src/base.c", "src/document.c", "src/editor_buffer.c",
+        "src/base.c", "src/configuration.c", "src/document.c", "src/editor_buffer.c",
         "src/editor_command.c", "src/file_text.c", "src/layout.c",
         "src/render.c", "src/unicode.c", KM_FILE_SOURCE,
     };
@@ -535,8 +544,9 @@ static bool build_bench_layout(void)
 #ifndef _WIN32
 static bool build_test_platform_pty(void)
 {
+    const char *sources[] = {"src/base.c", "src/configuration.c"};
     return build_executable("test_platform_pty", "tests/test_platform_pty.c",
-                            NULL, 0, false);
+                            sources, NOB_ARRAY_LEN(sources), false);
 }
 #endif
 

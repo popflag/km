@@ -1,4 +1,5 @@
 #include "editor.h"
+#include "configuration.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1781,6 +1782,53 @@ static void test_minibuffer_requests(void)
     CHECK(km_command_loop_last_command(loop) ==
           KM_COMMAND_DISPLAY_LINE_NUMBERS_MODE);
     CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_text_block(
+              loop, view,
+              (const uint8_t *)"global-display-line-numbers-mode", 32,
+              &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) ==
+          KM_COMMAND_REQUEST_GLOBAL_DISPLAY_LINE_NUMBERS_MODE);
+    CHECK(km_command_loop_request_has_argument(loop));
+    CHECK(km_command_loop_request_argument(loop) ==
+          (km_config_global_display_line_numbers_mode() ? 0 : 1));
+    CHECK(km_command_loop_last_command(loop) ==
+          KM_COMMAND_GLOBAL_DISPLAY_LINE_NUMBERS_MODE);
+    km_command_loop_clear_request(loop);
+    CHECK(dispatch_key(loop, view, 'u', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_text_block(
+              loop, view,
+              (const uint8_t *)"global-display-line-numbers-mode", 32,
+              &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) ==
+          KM_COMMAND_REQUEST_GLOBAL_DISPLAY_LINE_NUMBERS_MODE);
+    CHECK(km_command_loop_request_argument(loop) == 1);
+    km_command_loop_clear_request(loop);
+    CHECK(dispatch_key(loop, view, '-', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_text_block(
+              loop, view,
+              (const uint8_t *)"global-display-line-numbers-mode", 32,
+              &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) ==
+          KM_COMMAND_REQUEST_GLOBAL_DISPLAY_LINE_NUMBERS_MODE);
+    CHECK(km_command_loop_request_argument(loop) == 0);
+    km_command_loop_clear_request(loop);
+    CHECK(dispatch_key(loop, view, '0', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_text_block(
+              loop, view,
+              (const uint8_t *)"global-display-line-numbers-mode", 32,
+              &error) == KM_OK);
+    CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) ==
+          KM_COMMAND_REQUEST_GLOBAL_DISPLAY_LINE_NUMBERS_MODE);
+    CHECK(km_command_loop_request_argument(loop) == 0);
+    km_command_loop_clear_request(loop);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_ALT, &error) == KM_OK);
     CHECK(dispatch_text_block(loop, view, (const uint8_t *)"save-buffer", 11,
                               &error) == KM_OK);
     CHECK(dispatch_text(loop, view, '\n', 1, &error) == KM_OK);
@@ -1893,6 +1941,24 @@ static void test_minibuffer_requests(void)
     km_command_loop_destroy(loop);
     CHECK(km_view_destroy(view, &error) == KM_OK);
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+}
+
+static void test_global_line_number_default(void)
+{
+    bool initial = km_config_global_display_line_numbers_mode();
+    KmBuffer *buffer;
+    KmError error;
+
+    km_config_set_global_display_line_numbers_mode(false);
+    buffer = make_base(NULL, 0);
+    CHECK(!km_buffer_line_numbers_visible(buffer));
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    km_config_set_global_display_line_numbers_mode(true);
+    buffer = make_base(NULL, 0);
+    CHECK(km_buffer_line_numbers_visible(buffer));
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+    km_config_set_global_display_line_numbers_mode(initial);
 }
 
 static void test_case_space_and_line_commands(void)
@@ -2168,6 +2234,7 @@ int main(void)
     test_lines_mark_kill_and_yank();
     test_incremental_search();
     test_incremental_search_context();
+    test_global_line_number_default();
     test_minibuffer_requests();
     test_case_space_and_line_commands();
     test_quoted_insert_and_query_replace();

@@ -1,4 +1,5 @@
 #include "unicode.h"
+#include "configuration.h"
 
 #include "utf8proc.h"
 
@@ -49,6 +50,15 @@ static bool boundary_needs_context(int32_t previous, int32_t current)
             right->boundclass == UTF8PROC_BOUNDCLASS_EXTENDED_PICTOGRAPHIC) ||
            right->indic_conjunct_break ==
                UTF8PROC_INDIC_CONJUNCT_BREAK_CONSONANT;
+}
+
+int km_unicode_cell_width(int32_t codepoint)
+{
+    if (km_config_ambiguous_width() == 2u &&
+        utf8proc_charwidth_ambiguous(codepoint)) {
+        return 2;
+    }
+    return utf8proc_charwidth(codepoint);
 }
 
 KmStatus km_unicode_next_grapheme(const uint8_t *text, size_t len,
@@ -125,7 +135,7 @@ KmStatus km_unicode_next_grapheme(const uint8_t *text, size_t len,
         status = km_unicode_decode(text, end, scan, &codepoint, &consumed,
                                    error);
         if (status != KM_OK) return status;
-        codepoint_width = utf8proc_charwidth(codepoint);
+        codepoint_width = km_unicode_cell_width(codepoint);
         if (codepoint_width > width) width = codepoint_width;
         if (codepoint == 0x200d || codepoint == 0xfe0f) force_wide = true;
         if (codepoint == 0xfe0e) force_narrow = true;

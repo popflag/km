@@ -1,6 +1,7 @@
 #include "platform.h"
 #include "input_vt.h"
 #include "render.h"
+#include "configuration.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -81,8 +82,8 @@ static void update_size(KmPlatform *platform)
         platform->columns = size.ws_col;
         platform->rows = size.ws_row;
     } else {
-        platform->columns = 80;
-        platform->rows = 24;
+        platform->columns = km_config_fallback_columns();
+        platform->rows = km_config_fallback_rows();
     }
 }
 
@@ -426,7 +427,7 @@ int km_platform_read_event(KmPlatform *platform, KmEvent *event,
             platform, &byte,
             platform->interactive &&
                     km_input_vt_wants_timeout(platform->input_vt)
-                ? 50
+                ? km_config_escape_timeout_ms()
                 : -1,
             error, error_cap);
         if (read_status < 0) return -1;

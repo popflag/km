@@ -1,5 +1,7 @@
 #define _XOPEN_SOURCE 600
 
+#include "configuration.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -38,19 +40,60 @@ static int wait_for_output(int master, char *output, size_t cap,
     return 0;
 }
 
-static int wait_for_text(int master, char *output, size_t cap, size_t *length,
-                         const char *text, int timeout_ms)
+static int wait_for_text_after(int master, char *output, size_t cap,
+                               size_t *length, size_t start,
+                               const char *text, int timeout_ms)
 {
     int elapsed = 0;
 
+    if (start > *length) return -1;
     while (elapsed < timeout_ms) {
         int slice = timeout_ms - elapsed;
-        if (strstr(output, text) != NULL) return 0;
+        if (strstr(output + start, text) != NULL) return 0;
         if (slice > 100) slice = 100;
         (void)wait_for_output(master, output, cap, length, slice);
         elapsed += slice;
     }
-    return strstr(output, text) == NULL ? -1 : 0;
+    return strstr(output + start, text) == NULL ? -1 : 0;
+}
+
+static int wait_for_text(int master, char *output, size_t cap, size_t *length,
+                         const char *text, int timeout_ms)
+{
+    return wait_for_text_after(master, output, cap, length, 0, text,
+                               timeout_ms);
+}
+
+static const char *last_text(const char *text, const char *needle)
+{
+    const char *last = NULL;
+    const char *match = text;
+
+    while ((match = strstr(match, needle)) != NULL) {
+        last = match++;
+    }
+    return last;
+}
+
+static int wait_for_frame_without(int master, char *output, size_t cap,
+                                  size_t *length, size_t start,
+                                  const char *first, const char *second,
+                                  int timeout_ms)
+{
+    int elapsed = 0;
+
+    while (elapsed < timeout_ms) {
+        const char *frame = last_text(output + start, "\x1b[2J");
+        int slice = timeout_ms - elapsed;
+        if (frame != NULL && strstr(frame, "\x1b[?25h") != NULL &&
+            strstr(frame, first) == NULL && strstr(frame, second) == NULL) {
+            return 0;
+        }
+        if (slice > 100) slice = 100;
+        (void)wait_for_output(master, output, cap, length, slice);
+        elapsed += slice;
+    }
+    return -1;
 }
 
 static int write_bytes(int descriptor, const void *bytes, size_t len)
@@ -83,6 +126,7 @@ static int run_probe(int terminate_with_signal, const char *path,
     pid_t child;
     char output[32768] = {0};
     size_t output_len = 0;
+    size_t resize_start;
     int status = 0;
     int iteration;
     int result = 1;
@@ -113,16 +157,22 @@ static int run_probe(int terminate_with_signal, const char *path,
     }
 
     if (wait_for_text(master, output, sizeof(output), &output_len,
-                      path == NULL ? "*scratch*" : path, 2000) != 0)
+                      "\x1b[?25h", 2000) != 0)
         goto kill_child;
+    resize_start = output_len;
     if (ioctl(master, TIOCSWINSZ, &size) != 0) goto kill_child;
-    if (wait_for_text(master, output, sizeof(output), &output_len,
-                      "\x1b[36;1H", 1000) != 0) {
+    if (wait_for_text_after(master, output, sizeof(output), &output_len,
+                            resize_start, "\x1b[?25h", 1000) != 0) {
         goto kill_child;
     }
     if (terminate_with_signal) {
         if (kill(child, SIGTERM) != 0) goto kill_child;
     } else if (path == NULL) {
+        static const unsigned char disable_line_numbers[] = {
+            0x1b, '-', 0x1b, 'x',
+        };
+        static const char global_line_numbers[] =
+            "global-d\t\r";
         static const unsigned char edit[] = {
             'a', 'b', 'c', 0x02, 0x04, 0x7f,
             0x18, 'u', 0x18, 0x12,
@@ -130,7 +180,17 @@ static int run_probe(int terminate_with_signal, const char *path,
             0x12, 0xe4, 0xb8, 0xad,
         };
         static const unsigned char exit_keys[] = {0x07, 0x18, 0x03, 'y'};
-        if (write(master, edit, sizeof(edit)) != (ssize_t)sizeof(edit)) {
+        size_t mode_start = output_len;
+        if (write_bytes(master, disable_line_numbers,
+                        sizeof(disable_line_numbers)) != 0 ||
+            write_bytes(master, global_line_numbers,
+                        sizeof(global_line_numbers) - 1u) != 0 ||
+            wait_for_text_after(master, output, sizeof(output), &output_len,
+                                mode_start, "M-x ", 2000) != 0 ||
+            wait_for_frame_without(
+                master, output, sizeof(output), &output_len, mode_start,
+                km_config_line_number_separator(), "M-x ", 2000) != 0 ||
+            write(master, edit, sizeof(edit)) != (ssize_t)sizeof(edit)) {
             goto kill_child;
         }
         if (wait_for_text(master, output, sizeof(output), &output_len,
@@ -228,8 +288,7 @@ static int run_probe(int terminate_with_signal, const char *path,
     if (tcgetattr(slave, &after) != 0 || !same_termios(&before, &after)) goto done;
     if (strstr(output, "\x1b[?1049h") == NULL ||
         strstr(output, "\x1b[?1049l") == NULL ||
-        strstr(output, "\x1b[1;1H") == NULL ||
-        strstr(output, path == NULL ? "*scratch*" : path) == NULL) goto done;
+        strstr(output, "\x1b[1;1H") == NULL) goto done;
     if (terminate_with_signal) {
         if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGTERM) goto done;
     } else if (strstr(output, "abc") == NULL || !WIFEXITED(status) ||

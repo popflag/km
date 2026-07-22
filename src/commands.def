@@ -159,6 +159,11 @@ KM_PUBLIC_COMMAND(KM_COMMAND_DISPLAY_LINE_NUMBERS_MODE, 54,
                   "display-line-numbers-mode", command_display_line_numbers_mode,
                   KM_CONTEXT(KM_KEYMAP_GLOBAL),
                   KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_GLOBAL_DISPLAY_LINE_NUMBERS_MODE, 55,
+                  "global-display-line-numbers-mode",
+                  command_global_display_line_numbers_mode,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
 
 KM_INTERNAL_COMMAND(KM_INTERNAL_UNIVERSAL_ARGUMENT, 100, "universal-argument",
                     command_universal_argument, KM_CONTEXT(KM_KEYMAP_GLOBAL),

@@ -1,5 +1,6 @@
 #include "editor_internal.h"
 
+#include "configuration.h"
 #include "unicode.h"
 
 #include "utf8proc.h"
@@ -32,8 +33,6 @@ typedef struct {
     uint8_t *text;
     size_t len;
 } KmKillEntry;
-
-#define KM_KILL_RING_MAX 60
 
 typedef struct {
     uint32_t codepoint;
@@ -76,7 +75,7 @@ struct KmCommandLoop {
     size_t completion_count;
     size_t completion_index;
     char *completion_common;
-    KmKillEntry kill_ring[KM_KILL_RING_MAX];
+    KmKillEntry *kill_ring;
     size_t kill_count;
     KmBuffer *yank_buffer;
     KmRevision yank_revision;
@@ -193,8 +192,8 @@ static void commit_kill(KmCommandLoop *loop, KmKillEntry entry, bool replace)
     if (replace) {
         free(loop->kill_ring[0].text);
     } else {
-        if (loop->kill_count == KM_KILL_RING_MAX) {
-            free(loop->kill_ring[KM_KILL_RING_MAX - 1].text);
+        if (loop->kill_count == km_config_kill_ring_capacity()) {
+            free(loop->kill_ring[km_config_kill_ring_capacity() - 1].text);
         } else {
             ++loop->kill_count;
         }
@@ -1821,6 +1820,25 @@ static KmStatus command_display_line_numbers_mode(
         buffer, loop->command_has_argument
                     ? argument > 0
                     : !km_buffer_line_numbers_visible(buffer));
+    km_error_clear(error);
+    return KM_OK;
+}
+
+static KmStatus command_global_display_line_numbers_mode(
+    KmCommandLoop *loop, KmView *view, int64_t argument, KmError *error)
+{
+    bool enabled;
+
+    (void)view;
+    if (loop == NULL) {
+        return fail(error, KM_ERR_INVALID, "global display line numbers");
+    }
+    enabled = loop->command_has_argument
+                  ? argument > 0
+                  : !km_config_global_display_line_numbers_mode();
+    loop->request = KM_COMMAND_REQUEST_GLOBAL_DISPLAY_LINE_NUMBERS_MODE;
+    loop->request_argument = enabled ? 1 : 0;
+    loop->request_has_argument = true;
     km_error_clear(error);
     return KM_OK;
 }
@@ -3649,6 +3667,42 @@ static const KmDefaultBinding default_bindings[] = {
 #undef KM_BIND1
 #undef KM_BIND2
 
+static KmStatus bind_configured_keys(KmCommandLoop *loop, KmError *error)
+{
+    KmStatus status = km_configuration_validate(error);
+
+    (void)loop;
+
+#define setq(name, value) ((void)0)
+#define global_display_line_numbers_mode(enabled) ((void)0)
+#define bind_key(map, code, mods, command_name)                            \
+    do {                                                                   \
+        const KmKeyStroke sequence[] = {{(code), (mods)}};                 \
+        const KmCommandSpec *command = find_command_name((command_name));   \
+        if (status == KM_OK) {                                             \
+            status = (bind_key)(loop, (map), sequence, 1u, command, error); \
+        }                                                                  \
+    } while (0)
+#define bind_key2(map, code1, mods1, code2, mods2, command_name)          \
+    do {                                                                  \
+        const KmKeyStroke sequence[] = {                                  \
+            {(code1), (mods1)}, {(code2), (mods2)},                       \
+        };                                                                \
+        const KmCommandSpec *command = find_command_name((command_name)); \
+        if (status == KM_OK) {                                            \
+            status = (bind_key)(loop, (map), sequence, 2u, command,       \
+                                error);                                   \
+        }                                                                 \
+    } while (0)
+#include "../config.h"
+#undef bind_key2
+#undef bind_key
+#undef global_display_line_numbers_mode
+#undef setq
+
+    return status;
+}
+
 static KmStatus dispatch_one(KmCommandLoop *loop, KmView *view,
                              const KmEvent *event, KmError *error)
 {
@@ -3786,6 +3840,17 @@ KmStatus km_command_loop_create(KmCommandLoop **out_loop, KmError *error)
         };
         loop->keymaps[i].count = 1;
     }
+    if (km_config_kill_ring_capacity() >
+        SIZE_MAX / sizeof(*loop->kill_ring)) {
+        status = fail(error, KM_ERR_OOM, "kill ring");
+        goto fail;
+    }
+    loop->kill_ring = (KmKillEntry *)calloc(
+        km_config_kill_ring_capacity(), sizeof(*loop->kill_ring));
+    if (loop->kill_ring == NULL) {
+        status = fail(error, KM_ERR_OOM, "kill ring");
+        goto fail;
+    }
     for (i = 0; i < sizeof(default_bindings) / sizeof(default_bindings[0]); ++i) {
         const KmDefaultBinding *binding = &default_bindings[i];
         const KmCommandSpec *command = find_command_name(binding->command_name);
@@ -3793,6 +3858,8 @@ KmStatus km_command_loop_create(KmCommandLoop **out_loop, KmError *error)
                           binding->count, command, error);
         if (status != KM_OK) goto fail;
     }
+    status = bind_configured_keys(loop, error);
+    if (status != KM_OK) goto fail;
     *out_loop = loop;
     return KM_OK;
 
@@ -3812,6 +3879,7 @@ void km_command_loop_destroy(KmCommandLoop *loop)
         for (i = 0; i < loop->kill_count; ++i) {
             free(loop->kill_ring[i].text);
         }
+        free(loop->kill_ring);
         for (i = 0; i < KM_KEYMAP_COUNT; ++i) {
             free(loop->keymaps[i].nodes);
         }

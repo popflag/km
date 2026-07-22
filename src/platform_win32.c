@@ -4,6 +4,7 @@
 #include "input_vt.h"
 #include "platform.h"
 #include "render.h"
+#include "configuration.h"
 
 #include <limits.h>
 #include <stdarg.h>
@@ -105,8 +106,8 @@ static void update_size(KmPlatform *platform)
         platform->columns = (unsigned)(info.srWindow.Right - info.srWindow.Left + 1);
         platform->rows = (unsigned)(info.srWindow.Bottom - info.srWindow.Top + 1);
     } else {
-        platform->columns = 80;
-        platform->rows = 24;
+        platform->columns = km_config_fallback_columns();
+        platform->rows = km_config_fallback_rows();
     }
 }
 

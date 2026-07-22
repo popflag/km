@@ -14,6 +14,7 @@ typedef struct {
 KmStatus km_unicode_decode(const uint8_t *text, size_t len, size_t offset,
                            int32_t *codepoint, size_t *consumed,
                            KmError *error);
+int km_unicode_cell_width(int32_t codepoint);
 KmStatus km_unicode_next_grapheme(const uint8_t *text, size_t len,
                                   size_t start, KmGrapheme *out,
                                   KmError *error);

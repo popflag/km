@@ -12,15 +12,13 @@ struct KmView {
     bool preferred_column_set;
 };
 
-#define KM_MARK_RING_MAX 16
-
 struct KmBuffer {
     KmDocument *document;
     KmBuffer *base;
     KmAnchor *begv;
     KmAnchor *zv;
     KmAnchor *mark;
-    KmAnchor *mark_ring[KM_MARK_RING_MAX];
+    KmAnchor **mark_ring;
     size_t mark_ring_count;
     KmAnchor *saved_point;
     KmView *views;

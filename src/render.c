@@ -1,4 +1,5 @@
 #include "render.h"
+#include "configuration.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -300,14 +301,21 @@ static KmStatus select_style(char **bytes, size_t *length, size_t *capacity,
 
     if (*current == wanted) return KM_OK;
     if (wanted == KM_STYLE_REGION) {
-        status = append_bytes(bytes, length, capacity, "\x1b[0;7m", 6, error);
+        const char *style = km_config_style_region();
+        status = append_bytes(bytes, length, capacity, style, strlen(style),
+                              error);
     } else if (wanted == KM_STYLE_LINE_NUMBER) {
-        status = append_bytes(bytes, length, capacity, "\x1b[0;2m", 6, error);
+        const char *style = km_config_style_line_number();
+        status = append_bytes(bytes, length, capacity, style, strlen(style),
+                              error);
     } else if (wanted == KM_STYLE_MODELINE) {
-        status = append_bytes(bytes, length, capacity, "\x1b[0;1;7m", 8,
+        const char *style = km_config_style_mode_line();
+        status = append_bytes(bytes, length, capacity, style, strlen(style),
                               error);
     } else {
-        status = append_bytes(bytes, length, capacity, "\x1b[0m", 4, error);
+        const char *style = km_config_style_default();
+        status = append_bytes(bytes, length, capacity, style, strlen(style),
+                              error);
     }
     if (status == KM_OK) *current = wanted;
     return status;
