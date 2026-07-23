@@ -116,8 +116,8 @@
   对应 `global-display-line-numbers-mode`。Emacs 没有 `mode-line-mode` 命令，
   因而 mode line 使用变量形式 `setq(mode_line_format, 1)`；当前只实现
   `mode-line-format` 的 nil/非 nil 可见性子集。
-- Renderer 当前仍执行完整 CellGrid frame 输出；front/back row diff 是下一
-  个纯性能步骤，不影响上述编辑和数据安全契约。
+- Renderer 维护 front/back CellGrid 并按行输出变化区间；首次绘制和尺寸变化
+  使用完整 frame 输出，不影响上述编辑和数据安全契约。
 
 当前纵切不等于“完整 GNU Emacs”。递归/左右 Window 分割、minibuffer 候选弹窗、历史与
 模糊匹配、正则 search/replace、rectangle、keyboard macro、mode/keymap
@@ -201,7 +201,7 @@ Base buffer narrow 到 `[2,5)` 后，其 indirect buffer 仍观察到完整范�
 | A06  | 采用   | 原子 splice、registered anchors、命令级 transaction             |
 | A07  | 采用   | 线性 undo journal；不做 branching tree                          |
 | A08  | 采用   | vendoring `utf8proc v2.11.3`，Unicode 17.0.0                    |
-| A09  | 采用   | CellGrid；当前全帧输出，row diff 作为未来性能优化；不依赖 ncurses |
+| A09  | 采用   | CellGrid front/back row diff；首次绘制和尺寸变化全刷；不依赖 ncurses |
 | A10  | 采用   | POSIX `termios + poll + VT`                                     |
 | A11  | 采用   | Windows VT 输出 + `ReadConsoleInputW` 结构化输入                |
 | A12  | 采用   | 同目录临时文件 + flush + replace 的同步安全保存                 |
@@ -240,7 +240,7 @@ Editor -> Document -> Buffer(s) -> View(s)
       gap + anchors + undo       back CellGrid
                                       |
                                       v
-                              full-frame CellGrid output
+                              CellGrid row-diff output
                                       |
                                       v
                               VT output backend
@@ -896,9 +896,12 @@ EGC 长度在 Unicode 中没有 64 KiB 上限，因此 offset/length 使用 `siz
 4. 按 style 生成连续 glyph run，跳过 continuation。
 5. 覆盖或清除旧宽字符尾部和旧行尾残留。
 6. 最后设置 cursor 可见性、位置和形状。
-7. 输出成功后连同 arena ownership 整体交换 front/back；下一帧只重置已经成为 back 的旧 grid。输出失败则保留 front，丢弃 back，并将 front 标记 unknown 以便下次全屏重绘。
+7. 输出成功后销毁旧 front 并将 back 提升为新 front。输出失败则保留 front、
+   丢弃 back；当前主循环将终端写失败视为 fatal 并退出。未来若增加输出重试，
+   必须将 front 标记 unknown，下一帧执行全屏重绘。
 
-首版不做 scroll-region、insert/delete-line、终端查询驱动优化。Resize、width policy 变化、重新进入 alternate screen 和输出错误都触发 full redraw。
+首版不做 scroll-region、insert/delete-line、终端查询驱动优化。Resize、width
+policy 变化和重新进入 alternate screen 触发 full redraw。
 
 ### 15.3 不选择 ncurses
 
@@ -1170,7 +1173,7 @@ rectangle-mark-mode and C-x r commands
 
 - Visible hard-line EGC cache、width policy、CellGrid。
 - POSIX VT parser 和 Win32 input records。
-- Scroll、status/message line、bracketed paste（POSIX）；row diff 留作后续性能优化。
+- Scroll、status/message line、bracketed paste（POSIX）和 CellGrid row diff。
 
 退出条件：Unicode conformance、CellGrid golden、PTY/Console smoke tests 通过。
 
@@ -1300,7 +1303,7 @@ UTF-8 gap Document
 -> Emacs Buffer/View semantics
 -> normalized events + command/key trie
 -> utf8proc visible-line layout
--> CellGrid full-frame output
+-> CellGrid front/back row diff
 -> POSIX VT / Windows Console backend
 -> crash-aware synchronous save
 ```

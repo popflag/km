@@ -130,12 +130,70 @@ static void test_interactive_frame(void)
     km_cell_grid_destroy(grid);
 }
 
+static void test_interactive_frame_diff(void)
+{
+    static const uint8_t wide[] = {0xe6, 0x96, 0x87};
+    KmCellGrid *front = NULL;
+    KmCellGrid *back = NULL;
+    KmCellGrid *resized = NULL;
+    KmError error;
+    char *output;
+    char *styled;
+    size_t output_len;
+    size_t styled_len;
+
+    CHECK(km_cell_grid_create(2, 5, &front, &error) == KM_OK);
+    CHECK(km_cell_grid_create(2, 5, &back, &error) == KM_OK);
+    CHECK(km_cell_grid_put(front, 0, 0, (const uint8_t *)"s", 1, 1,
+                           KM_STYLE_REGION, &error) == KM_OK);
+    CHECK(km_cell_grid_put(front, 0, 1, (const uint8_t *)"a", 1, 1, 0,
+                           &error) == KM_OK);
+    CHECK(km_cell_grid_put(back, 0, 1, (const uint8_t *)"b", 1, 1,
+                           KM_STYLE_REGION, &error) == KM_OK);
+    CHECK(km_cell_grid_put(front, 1, 3, wide, sizeof(wide), 2, 0,
+                           &error) == KM_OK);
+    CHECK(km_cell_grid_put(back, 1, 3, wide, sizeof(wide), 2, 0,
+                           &error) == KM_OK);
+    CHECK(km_cell_grid_put(back, 1, 3, (const uint8_t *)"x", 1, 1, 0,
+                           &error) == KM_OK);
+    CHECK(km_cell_grid_encode_frame_diff_vt(
+              front, back, 1, 2, &output, &output_len, &error) == KM_OK);
+    CHECK(strstr(output, "\x1b[2J") == NULL);
+    styled_len = strlen("\x1b[1;1H ") + strlen(km_config_style_region()) +
+                 strlen(km_config_style_default()) + 1u;
+    styled = (char *)malloc(styled_len + 1u);
+    CHECK(styled != NULL);
+    CHECK((size_t)snprintf(styled, styled_len + 1u, "%s%sb%s",
+                           "\x1b[1;1H ", km_config_style_region(),
+                           km_config_style_default()) == styled_len);
+    CHECK(strstr(output, styled) != NULL);
+    free(styled);
+    CHECK(strstr(output, "\x1b[2;4Hx ") != NULL);
+    CHECK(strstr(output, "\x1b[2;3H\x1b[?25h") != NULL);
+    free(output);
+
+    CHECK(km_cell_grid_encode_frame_diff_vt(
+              back, back, 1, 2, &output, &output_len, &error) == KM_OK);
+    CHECK(strcmp(output, "\x1b[?25l\x1b[2;3H\x1b[?25h") == 0);
+    free(output);
+
+    CHECK(km_cell_grid_create(1, 5, &resized, &error) == KM_OK);
+    CHECK(km_cell_grid_encode_frame_diff_vt(
+              back, resized, 0, 0, &output, &output_len, &error) == KM_OK);
+    CHECK(strstr(output, "\x1b[2J") != NULL);
+    free(output);
+    km_cell_grid_destroy(resized);
+    km_cell_grid_destroy(back);
+    km_cell_grid_destroy(front);
+}
+
 int main(void)
 {
     test_utf8proc_version();
     test_probe_grid_and_output();
     test_wide_cell_overwrite();
     test_interactive_frame();
+    test_interactive_frame_diff();
     puts("render tests passed");
     return 0;
 }

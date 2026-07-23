@@ -49,5 +49,9 @@ KmStatus km_cell_grid_encode_frame_vt(const KmCellGrid *grid,
                                       size_t cursor_row, size_t cursor_column,
                                       char **out_bytes, size_t *out_len,
                                       KmError *error);
+KmStatus km_cell_grid_encode_frame_diff_vt(
+    const KmCellGrid *front, const KmCellGrid *back,
+    size_t cursor_row, size_t cursor_column,
+    char **out_bytes, size_t *out_len, KmError *error);
 
 #endif

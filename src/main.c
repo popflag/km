@@ -664,8 +664,9 @@ static void set_core_error(char *destination, size_t capacity,
                    km_status_string(error->code));
 }
 
-static int redraw(KmPlatform *platform, const AppBuffers *buffers,
-                  AppWindows *windows, const char *message,
+static int redraw(KmPlatform *platform, KmCellGrid **front,
+                  const AppBuffers *buffers, AppWindows *windows,
+                  const char *message,
                   const char *completion, bool prompt_active, char *error,
                   size_t error_cap)
 {
@@ -713,9 +714,14 @@ static int redraw(KmPlatform *platform, const AppBuffers *buffers,
         windows->items[i].rows = layout_windows[i].rows;
     }
     free(layout_windows);
-    result = km_platform_draw_grid(platform, grid, layout.cursor_row,
+    result = km_platform_draw_grid(platform, *front, grid, layout.cursor_row,
                                    layout.cursor_column, error, error_cap);
-    km_cell_grid_destroy(grid);
+    if (result == 0) {
+        km_cell_grid_destroy(*front);
+        *front = grid;
+    } else {
+        km_cell_grid_destroy(grid);
+    }
     return result;
 }
 
@@ -725,6 +731,7 @@ int main(int argc, char **argv)
     char message[256] = {0};
     char completion[4096] = {0};
     KmPlatform *platform = NULL;
+    KmCellGrid *front_grid = NULL;
     KmBuffer *initial_buffer = NULL;
     KmCommandLoop *loop = NULL;
     AppBuffers buffers = {0};
@@ -789,8 +796,8 @@ int main(int argc, char **argv)
         set_core_error(platform_error, sizeof(platform_error), &core_error);
         goto done;
     }
-    if (redraw(platform, &buffers, &windows, message, completion, false,
-               platform_error, sizeof(platform_error)) != 0) {
+    if (redraw(platform, &front_grid, &buffers, &windows, message, completion,
+               false, platform_error, sizeof(platform_error)) != 0) {
         goto done;
     }
 
@@ -1081,8 +1088,8 @@ int main(int argc, char **argv)
         } else {
             completion[0] = '\0';
         }
-        if (redraw(platform, &buffers, &windows, message, completion,
-                   km_command_loop_search_active(loop) ||
+        if (redraw(platform, &front_grid, &buffers, &windows, message,
+                   completion, km_command_loop_search_active(loop) ||
                        km_command_loop_prompt_active(loop),
                    platform_error, sizeof(platform_error)) != 0) {
             goto done;
@@ -1090,6 +1097,7 @@ int main(int argc, char **argv)
     }
 
 done:
+    km_cell_grid_destroy(front_grid);
     km_command_loop_destroy(loop);
     destroy_windows(&windows);
     destroy_buffers(&buffers);

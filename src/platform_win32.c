@@ -331,7 +331,8 @@ void km_platform_size(const KmPlatform *platform, unsigned *columns,
     if (rows != NULL) *rows = platform == NULL ? 0 : platform->rows;
 }
 
-int km_platform_draw_grid(KmPlatform *platform, const KmCellGrid *grid,
+int km_platform_draw_grid(KmPlatform *platform, const KmCellGrid *front,
+                          const KmCellGrid *grid,
                           size_t cursor_row, size_t cursor_column,
                           char *error, size_t error_cap)
 {
@@ -344,8 +345,9 @@ int km_platform_draw_grid(KmPlatform *platform, const KmCellGrid *grid,
         set_error(error, error_cap, "draw grid: interactive terminal required");
         return -1;
     }
-    if (km_cell_grid_encode_frame_vt(grid, cursor_row, cursor_column,
-                                     &bytes, &length, &render_error) != KM_OK) {
+    if (km_cell_grid_encode_frame_diff_vt(
+            front, grid, cursor_row, cursor_column,
+            &bytes, &length, &render_error) != KM_OK) {
         set_error(error, error_cap, "%s",
                   render_error.operation == NULL ? "encode terminal frame"
                                                  : render_error.operation);

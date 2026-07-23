@@ -83,7 +83,7 @@ static int wait_for_frame_without(int master, char *output, size_t cap,
     int elapsed = 0;
 
     while (elapsed < timeout_ms) {
-        const char *frame = last_text(output + start, "\x1b[2J");
+        const char *frame = last_text(output + start, "\x1b[?25l");
         int slice = timeout_ms - elapsed;
         if (frame != NULL && strstr(frame, "\x1b[?25h") != NULL &&
             strstr(frame, first) == NULL && strstr(frame, second) == NULL) {
@@ -191,6 +191,7 @@ static int run_probe(int terminate_with_signal, const char *path,
             0x18, 'o', 0x18, 0x02,
         };
         static const char selected_window_marker[] = "Zcheck";
+        static const char selected_window_marker_draw[] = "\x1b[1;6Hk";
         static const unsigned char exit_keys[] = {0x07, 0x18, 0x03, 'y'};
         size_t mode_start = output_len;
         size_t refresh_start;
@@ -205,7 +206,7 @@ static int run_probe(int terminate_with_signal, const char *path,
                 km_config_line_number_separator(), "M-x ", 2000) != 0 ||
             write_bytes(master, show_buffers, sizeof(show_buffers)) != 0 ||
             wait_for_text_after(master, output, sizeof(output), &output_len,
-                                mode_start, "*Buffer List*", 2000) != 0) {
+                                mode_start, "Buffer List*", 2000) != 0) {
             goto kill_child;
         }
         refresh_start = output_len;
@@ -214,7 +215,7 @@ static int run_probe(int terminate_with_signal, const char *path,
             write_bytes(master, selected_window_marker,
                         sizeof(selected_window_marker) - 1u) != 0 ||
             wait_for_text_after(master, output, sizeof(output), &output_len,
-                                refresh_start, selected_window_marker, 2000) !=
+                                refresh_start, selected_window_marker_draw, 2000) !=
                 0) {
             goto kill_child;
         }
@@ -227,13 +228,13 @@ static int run_probe(int terminate_with_signal, const char *path,
         restore_start = output_len;
         if (ioctl(master, TIOCSWINSZ, &size) != 0 ||
             wait_for_text_after(master, output, sizeof(output), &output_len,
-                                restore_start, "*Buffer List*", 2000) != 0) {
+                                restore_start, "Buffer List*", 2000) != 0) {
             goto kill_child;
         }
         refresh_start = output_len;
         if (write_bytes(master, refresh_buffers, sizeof(refresh_buffers)) != 0 ||
             wait_for_text_after(master, output, sizeof(output), &output_len,
-                                refresh_start, "*Buffer List*", 2000) != 0 ||
+                                refresh_start, "Buffer List*", 2000) != 0 ||
             write(master, edit, sizeof(edit)) != (ssize_t)sizeof(edit)) {
             goto kill_child;
         }
@@ -244,7 +245,7 @@ static int run_probe(int terminate_with_signal, const char *path,
             goto kill_child;
         }
         if (wait_for_text(master, output, sizeof(output), &output_len,
-                          "\xe4\xb8\xadq", 2000) != 0) {
+                          "\x1b[2;3Hq", 2000) != 0) {
             goto kill_child;
         }
     } else if (second_path == NULL) {
@@ -335,7 +336,8 @@ static int run_probe(int terminate_with_signal, const char *path,
         strstr(output, "\x1b[1;1H") == NULL) goto done;
     if (terminate_with_signal) {
         if (!WIFSIGNALED(status) || WTERMSIG(status) != SIGTERM) goto done;
-    } else if (strstr(output, "abc") == NULL || !WIFEXITED(status) ||
+    } else if ((path != NULL && strstr(output, "abc") == NULL) ||
+               !WIFEXITED(status) ||
                WEXITSTATUS(status) != 0) {
         goto done;
     }

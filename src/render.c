@@ -469,3 +469,111 @@ fail:
     free(bytes);
     return status;
 }
+
+static bool cells_equal(const KmCellGrid *left, const KmCellGrid *right,
+                        size_t row, size_t column)
+{
+    const KmCell *a = &left->cells[row * left->columns + column];
+    const KmCell *b = &right->cells[row * right->columns + column];
+
+    if (a->glyph_len != b->glyph_len || a->style_id != b->style_id ||
+        a->width != b->width || a->flags != b->flags) {
+        return false;
+    }
+    return a->glyph_len == 0 ||
+           memcmp(left->glyphs + a->glyph_off,
+                  right->glyphs + b->glyph_off, a->glyph_len) == 0;
+}
+
+KmStatus km_cell_grid_encode_frame_diff_vt(
+    const KmCellGrid *front, const KmCellGrid *back,
+    size_t cursor_row, size_t cursor_column,
+    char **out_bytes, size_t *out_len, KmError *error)
+{
+    char *bytes = NULL;
+    size_t length = 0;
+    size_t capacity = 0;
+    char position[64];
+    int position_len;
+    uint16_t current_style = KM_STYLE_DEFAULT;
+    KmStatus status;
+
+    if (back == NULL || out_bytes == NULL || out_len == NULL ||
+        cursor_row >= back->rows || cursor_column >= back->columns) {
+        return fail(error, KM_ERR_INVALID, "encode CellGrid frame diff");
+    }
+    if (front == NULL || front->rows != back->rows ||
+        front->columns != back->columns) {
+        return km_cell_grid_encode_frame_vt(back, cursor_row, cursor_column,
+                                            out_bytes, out_len, error);
+    }
+    *out_bytes = NULL;
+    *out_len = 0;
+    status = append_bytes(&bytes, &length, &capacity, "\x1b[?25l", 6, error);
+    if (status != KM_OK) goto fail;
+    for (size_t row = 0; row < back->rows; ++row) {
+        size_t first = 0;
+        size_t last = back->columns;
+
+        while (first < back->columns &&
+               cells_equal(front, back, row, first)) {
+            ++first;
+        }
+        if (first == back->columns) continue;
+        while (last > first && cells_equal(front, back, row, last - 1)) {
+            --last;
+        }
+        if (first != 0 &&
+            (((front->cells[row * front->columns + first].flags |
+               back->cells[row * back->columns + first].flags) &
+              KM_CELL_CONTINUATION) != 0)) {
+            --first;
+        }
+        position_len = snprintf(position, sizeof(position), "\x1b[%llu;%lluH",
+                                (unsigned long long)row + 1u,
+                                (unsigned long long)first + 1u);
+        if (position_len < 0 || (size_t)position_len >= sizeof(position)) {
+            status = fail(error, KM_ERR_INVALID, "format CellGrid row diff");
+            goto fail;
+        }
+        status = append_bytes(&bytes, &length, &capacity, position,
+                              (size_t)position_len, error);
+        if (status != KM_OK) goto fail;
+        for (size_t column = first; column < last; ++column) {
+            const KmCell *cell = &back->cells[row * back->columns + column];
+
+            if ((cell->flags & KM_CELL_CONTINUATION) != 0) continue;
+            status = select_style(&bytes, &length, &capacity, &current_style,
+                                  cell->style_id, error);
+            if (status != KM_OK) goto fail;
+            status = cell->glyph_len == 0
+                         ? append_bytes(&bytes, &length, &capacity, " ", 1, error)
+                         : append_bytes(
+                               &bytes, &length, &capacity,
+                               (const char *)back->glyphs + cell->glyph_off,
+                               cell->glyph_len, error);
+            if (status != KM_OK) goto fail;
+        }
+        status = select_style(&bytes, &length, &capacity, &current_style,
+                              KM_STYLE_DEFAULT, error);
+        if (status != KM_OK) goto fail;
+    }
+    position_len = snprintf(position, sizeof(position), "\x1b[%llu;%lluH\x1b[?25h",
+                            (unsigned long long)cursor_row + 1u,
+                            (unsigned long long)cursor_column + 1u);
+    if (position_len < 0 || (size_t)position_len >= sizeof(position)) {
+        status = fail(error, KM_ERR_INVALID, "format CellGrid cursor");
+        goto fail;
+    }
+    status = append_bytes(&bytes, &length, &capacity, position,
+                          (size_t)position_len, error);
+    if (status != KM_OK) goto fail;
+    *out_bytes = bytes;
+    *out_len = length;
+    km_error_clear(error);
+    return KM_OK;
+
+fail:
+    free(bytes);
+    return status;
+}
