@@ -87,3 +87,14 @@
   (goto-char (point-max))
   (backward-sentence 9)
   (km-emit "backward-sentence-boundary"))
+
+(with-temp-buffer
+  (transient-mark-mode 1)
+  (insert "abcdef\nghijkl\nmnopqr")
+  (goto-char 2)
+  (rectangle-mark-mode 1)
+  (goto-char 20)
+  (kill-rectangle (region-beginning) (region-end))
+  (goto-char 1)
+  (yank-rectangle)
+  (km-emit "rectangle"))

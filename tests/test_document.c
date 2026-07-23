@@ -188,6 +188,65 @@ static void test_explicit_anchor_move_survives_undo(void) {
     km_document_destroy(document);
 }
 
+static void test_batch_anchor_moves_are_atomic(void) {
+    static const uint8_t initial[] = "abcdef";
+    static const uint8_t final[] = "aXdeYZf";
+    static const uint8_t x[] = "X";
+    static const uint8_t yz[] = "YZ";
+    static const uint8_t bang[] = "!";
+    KmDocument *document = make_document(initial, sizeof(initial) - 1);
+    KmAnchor *first = NULL;
+    KmAnchor *second = NULL;
+    KmError error;
+    KmSplice splices[] = {
+        {{5}, {5}, yz, sizeof(yz) - 1, 0},
+        {{1}, {3}, x, sizeof(x) - 1, 0},
+    };
+    KmAnchorMove moves[2];
+    KmSplice insert = {{0}, {0}, bang, sizeof(bang) - 1, 0};
+    KmRevision revision;
+
+    CHECK(km_anchor_create(document, (KmBytePos){2}, KM_ANCHOR_BEFORE,
+                           &first, &error) == KM_OK);
+    CHECK(km_anchor_create(document, (KmBytePos){6}, KM_ANCHOR_AFTER,
+                           &second, &error) == KM_OK);
+    moves[0] = (KmAnchorMove){first, {6}};
+    moves[1] = (KmAnchorMove){second, {1}};
+    CHECK(km_document_apply_and_set_anchors(
+              document, splices, 2,
+              (KmTxnMeta){km_document_revision(document), 9}, moves, 2,
+              &error) == KM_OK);
+    check_text(document, final, sizeof(final) - 1);
+    CHECK(km_anchor_get(first).v == 6);
+    CHECK(km_anchor_get(second).v == 1);
+    CHECK(km_document_undo(document, km_document_revision(document), &error) ==
+          KM_OK);
+    check_text(document, initial, sizeof(initial) - 1);
+    CHECK(km_anchor_get(first).v == 2);
+    CHECK(km_anchor_get(second).v == 6);
+    CHECK(km_document_redo(document, km_document_revision(document), &error) ==
+          KM_OK);
+    check_text(document, final, sizeof(final) - 1);
+    CHECK(km_anchor_get(first).v == 6);
+    CHECK(km_anchor_get(second).v == 1);
+
+    revision = km_document_revision(document);
+    moves[0] = (KmAnchorMove){first, {0}};
+    moves[1] = (KmAnchorMove){first, {1}};
+    CHECK(km_document_apply_and_set_anchors(
+              document, &insert, 1, (KmTxnMeta){revision, 9}, moves, 2,
+              &error) == KM_ERR_INVALID);
+    moves[0] = (KmAnchorMove){first, {99}};
+    CHECK(km_document_apply_and_set_anchors(
+              document, &insert, 1, (KmTxnMeta){revision, 9}, moves, 1,
+              &error) == KM_ERR_INVALID);
+    CHECK(km_document_revision(document) == revision);
+    check_text(document, final, sizeof(final) - 1);
+    CHECK(km_anchor_get(first).v == 6);
+    CHECK(km_anchor_get(second).v == 1);
+    km_document_destroy(document);
+}
+
 static void test_batch_sort_same_point_and_relations(void) {
     static const uint8_t initial[] = "abcd";
     static const uint8_t expected[] = "XbABcdZ";
@@ -771,6 +830,7 @@ int main(void) {
     test_gap_copy_and_insert_affinity();
     test_anchor_delete_replace_and_restore();
     test_explicit_anchor_move_survives_undo();
+    test_batch_anchor_moves_are_atomic();
     test_batch_sort_same_point_and_relations();
     test_failure_atomicity_and_revision();
     test_undo_redo_and_branch_truncation();

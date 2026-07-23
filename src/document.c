@@ -852,21 +852,78 @@ KmStatus km_anchor_set(KmAnchor *anchor, KmBytePos position, KmError *error) {
     return KM_OK;
 }
 
+static bool boundary_after_splices(const KmDocument *document,
+                                   const KmOwnedSplice *splices, size_t count,
+                                   size_t position) {
+    size_t source = 0;
+    size_t final = 0;
+    size_t i;
+
+    for (i = 0; i < count; ++i) {
+        size_t unchanged;
+        size_t end;
+
+        if (splices[i].start < source) return false;
+        unchanged = splices[i].start - source;
+        if (final > SIZE_MAX - unchanged) return false;
+        end = final + unchanged;
+        if (position <= end) {
+            return is_boundary(document, source + position - final);
+        }
+        final = end;
+        if (final > SIZE_MAX - splices[i].insert_len) return false;
+        end = final + splices[i].insert_len;
+        if (position <= end) {
+            return valid_utf8(splices[i].insert, position - final);
+        }
+        final = end;
+        source = splices[i].end;
+    }
+    if (source > text_len(document) ||
+        final > SIZE_MAX - (text_len(document) - source)) {
+        return false;
+    }
+    return position <= final + text_len(document) - source &&
+           is_boundary(document, source + position - final);
+}
+
 static KmStatus document_apply(KmDocument *document, const KmSplice *splices,
                                size_t count, KmTxnMeta meta,
-                               KmAnchor *moved_anchor, size_t moved_position,
+                               const KmAnchorMove *moves, size_t move_count,
                                KmError *error) {
     KmUndoTxn *transaction;
     KmUndoTxn *discard;
     KmStatus status;
+    size_t i;
+    size_t j;
     km_error_clear(error);
-    if (document == NULL || (count != 0 && splices == NULL)) {
+    if (document == NULL || (count != 0 && splices == NULL) ||
+        (move_count != 0 && moves == NULL)) {
         return fail(error, KM_ERR_INVALID, "document apply");
+    }
+    for (i = 0; i < move_count; ++i) {
+        if (moves[i].anchor == NULL ||
+            moves[i].anchor->document != document) {
+            return fail(error, KM_ERR_INVALID, "document apply anchor");
+        }
+        for (j = 0; j < i; ++j) {
+            if (moves[j].anchor == moves[i].anchor) {
+                return fail(error, KM_ERR_INVALID, "document apply anchor");
+            }
+        }
     }
     if (meta.expected_revision != document->revision) {
         return fail(error, KM_ERR_CONFLICT, "document apply");
     }
     if (count == 0) {
+        for (i = 0; i < move_count; ++i) {
+            if (!is_boundary(document, moves[i].position.v)) {
+                return fail(error, KM_ERR_INVALID, "document apply anchor");
+            }
+        }
+        for (i = 0; i < move_count; ++i) {
+            moves[i].anchor->pos = moves[i].position.v;
+        }
         return KM_OK;
     }
     if (document->revision == UINT64_MAX ||
@@ -879,39 +936,54 @@ static KmStatus document_apply(KmDocument *document, const KmSplice *splices,
         return status;
     }
     if (transaction == NULL) {
-        if (moved_anchor != NULL) moved_anchor->pos = moved_position;
+        for (i = 0; i < move_count; ++i) {
+            if (!is_boundary(document, moves[i].position.v)) {
+                return fail(error, KM_ERR_INVALID, "document apply anchor");
+            }
+        }
+        for (i = 0; i < move_count; ++i) {
+            moves[i].anchor->pos = moves[i].position.v;
+        }
         return KM_OK;
     }
 
-    if (moved_anchor != NULL) {
+    for (i = 0; i < move_count; ++i) {
         KmAnchorRestore *restore = NULL;
-        size_t i;
+        KmAnchor *anchor = moves[i].anchor;
 
-        for (i = 0; i < transaction->restore_count; ++i) {
-            if (transaction->restores[i].id == moved_anchor->id) {
-                restore = &transaction->restores[i];
+        if (!boundary_after_splices(document, transaction->forward,
+                                    transaction->splice_count,
+                                    moves[i].position.v)) {
+            free_transaction(transaction);
+            return fail(error, KM_ERR_INVALID, "document apply anchor");
+        }
+        for (j = 0; j < transaction->restore_count; ++j) {
+            if (transaction->restores[j].id == anchor->id) {
+                restore = &transaction->restores[j];
                 break;
             }
         }
         if (restore == NULL) {
             restore = &transaction->restores[transaction->restore_count++];
-            restore->id = moved_anchor->id;
-            restore->old_pos = moved_anchor->pos;
-            restore->expected_before_forward = moved_anchor->pos;
+            restore->id = anchor->id;
+            restore->old_pos = anchor->pos;
+            restore->expected_before_forward = anchor->pos;
         }
-        restore->new_pos = moved_position;
+        restore->new_pos = moves[i].position.v;
         restore->expected_after_forward = simulate_position(
-            moved_anchor->pos, moved_anchor->affinity,
+            anchor->pos, anchor->affinity,
             transaction->forward, transaction->splice_count);
-        restore->expected_before_inverse = moved_position;
+        restore->expected_before_inverse = moves[i].position.v;
         restore->expected_after_inverse = simulate_position(
-            moved_position, moved_anchor->affinity,
+            moves[i].position.v, anchor->affinity,
             transaction->inverse, transaction->splice_count);
     }
 
     apply_owned_splices(document, transaction->forward,
                         transaction->splice_count);
-    if (moved_anchor != NULL) moved_anchor->pos = moved_position;
+    for (i = 0; i < move_count; ++i) {
+        moves[i].anchor->pos = moves[i].position.v;
+    }
     discard = document->history_cursor != NULL
                   ? document->history_cursor->next
                   : document->history_head;
@@ -939,44 +1011,21 @@ KmStatus km_document_apply(KmDocument *document, const KmSplice *splices,
     return document_apply(document, splices, count, meta, NULL, 0, error);
 }
 
-static bool boundary_after_splice(const KmDocument *document,
-                                  const KmSplice *splice, size_t position) {
-    size_t deleted;
-    size_t final_len;
-    size_t inserted_end;
-
-    if (splice->start.v > splice->end.v ||
-        splice->end.v > text_len(document) ||
-        splice->insert_len > SIZE_MAX - splice->start.v ||
-        text_len(document) - (splice->end.v - splice->start.v) >
-            SIZE_MAX - splice->insert_len) {
-        return false;
-    }
-    deleted = splice->end.v - splice->start.v;
-    final_len = text_len(document) - deleted + splice->insert_len;
-    inserted_end = splice->start.v + splice->insert_len;
-    if (position > final_len) return false;
-    if (position < splice->start.v) return is_boundary(document, position);
-    if (position <= inserted_end) {
-        size_t offset = position - splice->start.v;
-        return valid_utf8(splice->insert, offset);
-    }
-    return is_boundary(document,
-                       position - splice->insert_len + deleted);
-}
-
 KmStatus km_document_apply_and_set_anchor(KmDocument *document,
                                           const KmSplice *splice,
                                           KmTxnMeta meta, KmAnchor *anchor,
                                           KmBytePos position,
                                           KmError *error) {
-    km_error_clear(error);
-    if (document == NULL || splice == NULL || anchor == NULL ||
-        anchor->document != document ||
-        !boundary_after_splice(document, splice, position.v)) {
-        return fail(error, KM_ERR_INVALID, "document apply anchor");
-    }
-    return document_apply(document, splice, 1, meta, anchor, position.v,
+    KmAnchorMove move = {anchor, position};
+    return document_apply(document, splice, 1, meta, &move, 1, error);
+}
+
+KmStatus km_document_apply_and_set_anchors(KmDocument *document,
+                                           const KmSplice *splices,
+                                           size_t count, KmTxnMeta meta,
+                                           const KmAnchorMove *moves,
+                                           size_t move_count, KmError *error) {
+    return document_apply(document, splices, count, meta, moves, move_count,
                           error);
 }
 

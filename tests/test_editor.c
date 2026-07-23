@@ -27,18 +27,24 @@ static void check_text(const KmBuffer *buffer, const uint8_t *expected,
                        size_t expected_len)
 {
     const KmDocument *document = km_buffer_document(buffer);
-    uint8_t *actual = expected_len == 0 ? NULL : malloc(expected_len);
+    size_t actual_len = km_document_len(document);
+    uint8_t *actual = actual_len == 0 ? NULL : malloc(actual_len);
     KmError error;
 
-    CHECK(km_document_len(document) == expected_len);
-    CHECK(km_document_copy(document, (KmBytePos){0}, expected_len, actual,
+    if (actual_len != expected_len) {
+        fprintf(stderr, "text length mismatch: got %zu, expected %zu\n",
+                actual_len, expected_len);
+    }
+    CHECK(km_document_copy(document, (KmBytePos){0}, actual_len, actual,
                            &error) == KM_OK);
-    if (expected_len != 0 && memcmp(actual, expected, expected_len) != 0) {
+    if (actual_len != expected_len ||
+        (expected_len != 0 && memcmp(actual, expected, expected_len) != 0)) {
         size_t i;
-        fprintf(stderr, "text mismatch (%zu bytes):", expected_len);
-        for (i = 0; i < expected_len; ++i) fprintf(stderr, " %02x", actual[i]);
+        fprintf(stderr, "text mismatch (%zu bytes):", actual_len);
+        for (i = 0; i < actual_len; ++i) fprintf(stderr, " %02x", actual[i]);
         fputc('\n', stderr);
     }
+    CHECK(actual_len == expected_len);
     CHECK(expected_len == 0 || memcmp(actual, expected, expected_len) == 0);
     free(actual);
 }
@@ -2276,6 +2282,99 @@ static void test_window_requests(void)
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
 }
 
+static void test_rectangle_kill_and_yank(void)
+{
+    static const uint8_t text[] = "abcdef\nghijkl\nmnopqr";
+    static const uint8_t killed[] = "af\ngl\nmr";
+    static const uint8_t yanked[] = "bcdeaf\nhijkgl\nnopqmr";
+    static const uint8_t tab_text[] = "a\tb\n123456\nxy";
+    static const uint8_t tab_killed[] = "a  b\n13456\nx";
+    static const uint8_t tab_yanked[] = "a  b\n13456\nx \n 2\n y";
+    static const uint8_t wide_text[] = "a\xe4\xb8\xad" "b\n1234";
+    static const uint8_t wide_killed[] = "ab\n134";
+    KmBuffer *buffer = make_base(text, sizeof(text) - 1);
+    KmView *view = NULL;
+    KmCommandLoop *loop = NULL;
+    KmError error;
+    KmRevision revision;
+
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){1}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, ' ', 0, &error) == KM_OK);
+    CHECK(km_buffer_rectangle_mark_mode(buffer));
+    CHECK(km_buffer_mark(buffer).v == 1 && km_buffer_mark_active(buffer));
+    CHECK(km_view_set_point(view, (KmBytePos){19}, &error) == KM_OK);
+    revision = km_document_revision(km_buffer_document(buffer));
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'r', 0, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'k', 0, &error) == KM_OK);
+    CHECK(km_document_revision(km_buffer_document(buffer)) == revision + 1);
+    check_text(buffer, killed, sizeof(killed) - 1);
+    CHECK(km_buffer_rectangle_mark_mode(buffer));
+    CHECK(km_view_undo(view, &error) == KM_OK);
+    check_text(buffer, text, sizeof(text) - 1);
+    CHECK(km_view_redo(view, &error) == KM_OK);
+    check_text(buffer, killed, sizeof(killed) - 1);
+    CHECK(km_view_set_point(view, (KmBytePos){0}, &error) == KM_OK);
+    revision = km_document_revision(km_buffer_document(buffer));
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'r', 0, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'y', 0, &error) == KM_OK);
+    CHECK(km_document_revision(km_buffer_document(buffer)) == revision + 1);
+    check_text(buffer, yanked, sizeof(yanked) - 1);
+    CHECK(km_view_point(view).v == 18);
+    CHECK(km_buffer_mark(buffer).v == 0 && km_buffer_mark_active(buffer));
+    CHECK(km_view_undo(view, &error) == KM_OK);
+    check_text(buffer, killed, sizeof(killed) - 1);
+    CHECK(km_view_point(view).v == 0);
+    CHECK(km_buffer_mark(buffer).v == 1);
+    CHECK(km_view_redo(view, &error) == KM_OK);
+    check_text(buffer, yanked, sizeof(yanked) - 1);
+    CHECK(km_view_point(view).v == 18);
+    CHECK(km_buffer_mark(buffer).v == 0);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    buffer = make_base(tab_text, sizeof(tab_text) - 1);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){1}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, ' ', 0, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){13}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'r', 0, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'k', 0, &error) == KM_OK);
+    check_text(buffer, tab_killed, sizeof(tab_killed) - 1);
+    CHECK(km_view_set_point(view, (KmBytePos){sizeof(tab_killed) - 1}, &error) ==
+          KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'r', 0, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'y', 0, &error) == KM_OK);
+    check_text(buffer, tab_yanked, sizeof(tab_yanked) - 1);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+
+    buffer = make_base(wide_text, sizeof(wide_text) - 1);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){1}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, ' ', 0, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){8}, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'r', 0, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'k', 0, &error) == KM_OK);
+    check_text(buffer, wide_killed, sizeof(wide_killed) - 1);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+}
+
 int main(void)
 {
     test_ownership();
@@ -2306,5 +2405,6 @@ int main(void)
     test_quoted_insert_and_query_replace();
     test_goto_char_and_viewport_requests();
     test_window_requests();
+    test_rectangle_kill_and_yank();
     return 0;
 }

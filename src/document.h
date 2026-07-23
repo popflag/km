@@ -32,6 +32,11 @@ typedef struct {
     uint64_t command_id;
 } KmTxnMeta;
 
+typedef struct {
+    KmAnchor *anchor;
+    KmBytePos position;
+} KmAnchorMove;
+
 KmStatus km_document_create(const uint8_t *text, size_t len,
                             KmDocument **out_document, KmError *error);
 void km_document_destroy(KmDocument *document);
@@ -64,6 +69,11 @@ KmStatus km_document_apply_and_set_anchor(KmDocument *document,
                                           KmTxnMeta meta, KmAnchor *anchor,
                                           KmBytePos position,
                                           KmError *error);
+KmStatus km_document_apply_and_set_anchors(KmDocument *document,
+                                           const KmSplice *splices,
+                                           size_t count, KmTxnMeta meta,
+                                           const KmAnchorMove *moves,
+                                           size_t move_count, KmError *error);
 bool km_document_can_undo(const KmDocument *document);
 bool km_document_can_redo(const KmDocument *document);
 bool km_document_can_undo_in_range(const KmDocument *document,

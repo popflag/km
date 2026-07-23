@@ -180,6 +180,15 @@ KM_PUBLIC_COMMAND(KM_COMMAND_OTHER_WINDOW, 59, "other-window",
 KM_PUBLIC_COMMAND(KM_COMMAND_LIST_BUFFERS, 60, "list-buffers",
                   command_list_buffers, KM_CONTEXT(KM_KEYMAP_GLOBAL),
                   KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_RECTANGLE_MARK_MODE, 61, "rectangle-mark-mode",
+                  command_rectangle_mark_mode, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_KILL_RECTANGLE, 62, "kill-rectangle",
+                  command_kill_rectangle, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_YANK_RECTANGLE, 63, "yank-rectangle",
+                  command_yank_rectangle, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
 
 KM_INTERNAL_COMMAND(KM_INTERNAL_UNIVERSAL_ARGUMENT, 100, "universal-argument",
                     command_universal_argument, KM_CONTEXT(KM_KEYMAP_GLOBAL),

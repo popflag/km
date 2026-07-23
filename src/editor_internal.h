@@ -30,6 +30,7 @@ struct KmBuffer {
     bool read_only;
     bool mark_set;
     bool mark_active;
+    bool rectangle_mark_mode;
     bool line_numbers_visible;
 };
 

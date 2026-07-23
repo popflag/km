@@ -1,7 +1,7 @@
 # 类 GNU Emacs 文本编辑器架构调研记录
 
 > 状态：架构基线；Phase 0/1 已完成，Phase 2/3 的多 View 多 Buffer TUI 与
-> Phase 4 的安全保存纵切已实现
+> Phase 4 的安全保存纵切及 Phase 5 的最小 rectangle kill/yank 已实现
 > 调研日期：2026-07-20（UTC-08:00）
 > 目标语言：C17。原需求中的“C20”不是 ISO C 标准版本；若实际指 C++20，需要重新评估本文的类型、构建和插件 ABI 结论。
 > 决策标记：`采用`、`拒绝`、`待验证`、`未来`。
@@ -100,6 +100,11 @@
   完整 Emacs undo 遍历仍需差分测试后扩展。
 - `C-y` 将 inactive mark 放在 yank 起点；`C-t 0` 交换 point 与 mark 所指字符，
   并将两个位置作为同一 Document transaction 的 anchor metadata 参与 undo/redo。
+- `C-x SPC` 启用 Buffer-local rectangle mark；`C-x r k` 按 hard-line cell
+  column 一次 batch transaction 执行 `kill-rectangle`，短行保存空格、部分 Tab
+  删除后以空格保留未覆盖 cell、相交宽 EGC 整体删除；`C-x r y` 使用独立的
+  killed rectangle 在 point column 插入并为短行补空格。矩形 region 按 hard
+  line/column 高亮，不把 soft-wrap row 当作矩形行。
 - `M-%` 提供大小写敏感的 UTF-8 字面 query replace，支持 `y`、`n`、`!`、`q`
   和 `C-g`；`!` 在分配和边界检查完成后以一个 transaction 替换剩余匹配。
   大小写单词命令使用 vendored `utf8proc` 的 Unicode simple case mapping；需要
@@ -120,7 +125,7 @@
   使用完整 frame 输出，不影响上述编辑和数据安全契约。
 
 当前纵切不等于“完整 GNU Emacs”。递归/左右 Window 分割、minibuffer 候选弹窗、历史与
-模糊匹配、正则 search/replace、rectangle、keyboard macro、mode/keymap
+模糊匹配、正则 search/replace、其余 rectangle 命令与复杂边缘语义、keyboard macro、mode/keymap
 扩展和插件仍按
 后续 Phase 分别冻结行为与实现。
 

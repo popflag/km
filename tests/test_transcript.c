@@ -109,6 +109,17 @@ static int run_case(const char *name, const uint8_t *text, size_t len,
     } else if (scenario == 12) {
         CHECK(key(loop, view, '9', KM_MOD_ALT, &error) == KM_OK);
         CHECK(key(loop, view, 'a', KM_MOD_ALT, &error) == KM_OK);
+    } else if (scenario == 13) {
+        CHECK(key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+        CHECK(key(loop, view, ' ', 0, &error) == KM_OK);
+        CHECK(km_view_set_point(view, (KmBytePos){19}, &error) == KM_OK);
+        CHECK(key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+        CHECK(key(loop, view, 'r', 0, &error) == KM_OK);
+        CHECK(key(loop, view, 'k', 0, &error) == KM_OK);
+        CHECK(km_view_set_point(view, (KmBytePos){0}, &error) == KM_OK);
+        CHECK(key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+        CHECK(key(loop, view, 'r', 0, &error) == KM_OK);
+        CHECK(key(loop, view, 'y', 0, &error) == KM_OK);
     } else {
         if (scenario == 7) {
             CHECK(key(loop, view, '2', KM_MOD_ALT, &error) == KM_OK);
@@ -154,7 +165,9 @@ int main(void)
         run_case("forward-sentence-boundary",
                  (const uint8_t *)"One.  Two.", 10, 0, 11) != 0 ||
         run_case("backward-sentence-boundary",
-                 (const uint8_t *)"One.  Two.", 10, 10, 12) != 0) {
+                 (const uint8_t *)"One.  Two.", 10, 10, 12) != 0 ||
+        run_case("rectangle",
+                 (const uint8_t *)"abcdef\nghijkl\nmnopqr", 20, 1, 13) != 0) {
         return 1;
     }
     return 0;

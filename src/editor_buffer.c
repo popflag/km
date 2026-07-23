@@ -96,6 +96,7 @@ void commit_mark(KmBuffer *buffer, KmMarkPlan *plan, bool active)
     }
     buffer->mark_set = true;
     buffer->mark_active = active;
+    buffer->rectangle_mark_mode = false;
 }
 
 KmStatus apply_view_splice(KmView *view, KmBytePos start, KmBytePos end,
@@ -674,134 +675,6 @@ KmStatus move_paragraphs(KmView *view, int64_t argument,
     return status;
 }
 
-static KmStatus add_column(size_t *column, size_t amount, KmError *error)
-{
-    if (*column > SIZE_MAX - amount) {
-        return fail(error, KM_ERR_INVALID, "line column");
-    }
-    *column += amount;
-    return KM_OK;
-}
-
-static KmStatus grapheme_prefix_width(const uint8_t *text, size_t end,
-                                      size_t point, size_t *out_width,
-                                      KmError *error)
-{
-    size_t scan;
-    size_t width = 0;
-
-    for (scan = 0; scan < point;) {
-        int32_t codepoint;
-        size_t consumed;
-        int codepoint_width;
-        KmStatus status = km_unicode_decode(text, end, scan, &codepoint,
-                                            &consumed, error);
-        if (status != KM_OK) return status;
-        codepoint_width = km_unicode_cell_width(codepoint);
-        if (codepoint_width > 0 && (size_t)codepoint_width > width) {
-            width = (size_t)codepoint_width;
-        }
-        scan += consumed;
-    }
-    *out_width = width;
-    return KM_OK;
-}
-
-static KmStatus line_column_at(const uint8_t *text, size_t len,
-                               size_t start, size_t point, size_t *out_column,
-                               KmError *error)
-{
-    size_t offset = start;
-    size_t column = 0;
-
-    while (offset < point) {
-        int32_t codepoint;
-        size_t consumed;
-        KmStatus status = km_unicode_decode(text, len, offset, &codepoint,
-                                            &consumed, error);
-        if (status != KM_OK) return status;
-        if (codepoint == '\t') {
-            status = add_column(
-                &column,
-                km_config_tab_width() - column % km_config_tab_width(), error);
-            offset += consumed;
-        } else if ((codepoint >= 0 && codepoint < 0x20) || codepoint == 0x7f) {
-            status = add_column(&column, 2, error);
-            offset += consumed;
-        } else {
-            KmGrapheme grapheme;
-            status = km_unicode_next_grapheme(text, len, offset, &grapheme,
-                                              error);
-            if (status != KM_OK) return status;
-            if (point < grapheme.end) {
-                size_t prefix;
-                status = grapheme_prefix_width(text + offset,
-                                                grapheme.end - offset,
-                                                point - offset, &prefix,
-                                                error);
-                if (status != KM_OK) return status;
-                if (prefix > grapheme.width) prefix = grapheme.width;
-                status = add_column(&column, prefix, error);
-                offset = point;
-            } else {
-                status = add_column(&column, grapheme.width, error);
-                offset = grapheme.end;
-            }
-        }
-        if (status != KM_OK) return status;
-    }
-    *out_column = column;
-    return KM_OK;
-}
-
-static KmStatus line_position_at_column(const uint8_t *text, size_t len,
-                                        size_t start, size_t end,
-                                        size_t target, size_t *out_position,
-                                        KmError *error)
-{
-    size_t offset = start;
-    size_t column = 0;
-
-    while (offset < end) {
-        int32_t codepoint;
-        size_t consumed;
-        size_t next_column;
-        size_t next_offset;
-        KmStatus status = km_unicode_decode(text, len, offset, &codepoint,
-                                            &consumed, error);
-        if (status != KM_OK) return status;
-        next_offset = offset + consumed;
-        if (codepoint == '\t') {
-            size_t tab_width =
-                km_config_tab_width() - column % km_config_tab_width();
-            if (column > SIZE_MAX - tab_width) {
-                return fail(error, KM_ERR_INVALID, "line column");
-            }
-            next_column = column + tab_width;
-        } else if ((codepoint >= 0 && codepoint < 0x20) || codepoint == 0x7f) {
-            if (column > SIZE_MAX - 2) {
-                return fail(error, KM_ERR_INVALID, "line column");
-            }
-            next_column = column + 2;
-        } else {
-            KmGrapheme grapheme;
-            status = km_unicode_next_grapheme(text, len, offset, &grapheme,
-                                              error);
-            if (status != KM_OK) return status;
-            next_offset = grapheme.end;
-            if (column > SIZE_MAX - grapheme.width) {
-                return fail(error, KM_ERR_INVALID, "line column");
-            }
-            next_column = column + grapheme.width;
-        }
-        if (next_column > target) break;
-        column = next_column;
-        offset = next_offset;
-    }
-    *out_position = offset;
-    return KM_OK;
-}
-
 KmStatus move_vertical(KmView *view, int64_t argument, KmError *error)
 {
     KmBytePos point;
@@ -822,8 +695,9 @@ KmStatus move_vertical(KmView *view, int64_t argument, KmError *error)
     if (view->preferred_column_set) {
         preferred = view->preferred_column;
     } else {
-        status = line_column_at(text, len, line_start_at(text, position),
-                                position, &preferred, error);
+        status = km_unicode_line_column_at(
+            text, len, line_start_at(text, position), position, &preferred,
+            error);
         if (status != KM_OK) goto done;
     }
     while (remaining != 0) {
@@ -847,8 +721,12 @@ KmStatus move_vertical(KmView *view, int64_t argument, KmError *error)
             target_start = current_end + 1;
             target_end = line_end_at(text, len, target_start);
         }
-        status = line_position_at_column(text, len, target_start, target_end,
-                                         preferred, &position, error);
+        {
+            size_t actual_column;
+            status = km_unicode_line_position_at_column(
+                text, len, target_start, target_end, preferred, &position,
+                &actual_column, error);
+        }
         if (status != KM_OK) goto done;
         --remaining;
     }
@@ -1361,6 +1239,11 @@ bool km_buffer_mark_active(const KmBuffer *buffer)
 KmBytePos km_buffer_mark(const KmBuffer *buffer)
 {
     return buffer == NULL ? (KmBytePos){0} : km_anchor_get(buffer->mark);
+}
+
+bool km_buffer_rectangle_mark_mode(const KmBuffer *buffer)
+{
+    return buffer != NULL && buffer->rectangle_mark_mode;
 }
 
 bool km_buffer_line_numbers_visible(const KmBuffer *buffer)

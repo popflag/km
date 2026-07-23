@@ -345,6 +345,46 @@ static void test_line_number_gutter(void)
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
 }
 
+static void test_rectangle_region_style(void)
+{
+    static const uint8_t text[] = "abcd\nabcd\nabcd";
+    KmBuffer *buffer = NULL;
+    KmView *view = NULL;
+    KmCommandLoop *loop = NULL;
+    KmCellGrid *grid = NULL;
+    KmLayoutResult layout;
+    KmEvent event = {0};
+    KmError error;
+    size_t row;
+
+    CHECK(km_buffer_create_base(text, sizeof(text) - 1, &buffer, &error) == KM_OK);
+    km_buffer_set_line_numbers_visible(buffer, false);
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){1}, &error) == KM_OK);
+    event.kind = KM_EVENT_KEY;
+    event.repeat = 1;
+    event.codepoint = 'x';
+    event.modifiers = KM_MOD_CTRL;
+    CHECK(km_command_loop_dispatch(loop, view, &event, &error) == KM_OK);
+    event.codepoint = ' ';
+    event.modifiers = 0;
+    CHECK(km_command_loop_dispatch(loop, view, &event, &error) == KM_OK);
+    CHECK(km_view_set_point(view, (KmBytePos){13}, &error) == KM_OK);
+    CHECK(km_layout_view(buffer, view, 5, 8, 0, NULL, NULL, false, &grid,
+                         &layout, &error) == KM_OK);
+    for (row = 0; row < 3; ++row) {
+        CHECK(km_cell_grid_cell(grid, row, 0)->style_id == KM_STYLE_DEFAULT);
+        CHECK(km_cell_grid_cell(grid, row, 1)->style_id == KM_STYLE_REGION);
+        CHECK(km_cell_grid_cell(grid, row, 2)->style_id == KM_STYLE_REGION);
+        CHECK(km_cell_grid_cell(grid, row, 3)->style_id == KM_STYLE_DEFAULT);
+    }
+    km_cell_grid_destroy(grid);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+}
+
 static void test_scroll_commands(void)
 {
     static const uint8_t lines[] = "0\n1\n2\n3\n4\n5\n6\n7\n8\n9";
@@ -548,6 +588,7 @@ int main(void)
     test_wrap_and_viewport();
     test_unicode_file_name_status();
     test_line_number_gutter();
+    test_rectangle_region_style();
     test_scroll_commands();
     test_recenter_scroll();
     test_move_to_window_line();

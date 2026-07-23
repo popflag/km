@@ -83,6 +83,7 @@ KmStatus km_buffer_set_name(KmBuffer *buffer, const char *name,
 bool km_buffer_visits_same_file(const KmBuffer *left, const KmBuffer *right);
 bool km_buffer_mark_active(const KmBuffer *buffer);
 KmBytePos km_buffer_mark(const KmBuffer *buffer);
+bool km_buffer_rectangle_mark_mode(const KmBuffer *buffer);
 bool km_buffer_line_numbers_visible(const KmBuffer *buffer);
 void km_buffer_set_line_numbers_visible(KmBuffer *buffer, bool visible);
 

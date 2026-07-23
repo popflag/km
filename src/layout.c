@@ -32,10 +32,15 @@ typedef struct {
     size_t content_rows;
     size_t region_start;
     size_t region_end;
+    size_t rectangle_top;
+    size_t rectangle_bottom;
+    size_t rectangle_left;
+    size_t rectangle_right;
     uint16_t style_id;
     KmCellGrid *grid;
     bool cursor_set;
     bool region_active;
+    bool rectangle_active;
     bool seek_active;
     bool seek_set;
 } KmLayoutPass;
@@ -170,12 +175,22 @@ static KmStatus draw_glyph(KmLayoutPass *pass, const uint8_t *glyph,
     return KM_OK;
 }
 
-static void select_region_style(KmLayoutPass *pass, size_t start, size_t end)
+static void select_region_style(KmLayoutPass *pass, size_t start, size_t end,
+                                size_t width)
 {
-    pass->style_id = pass->region_active && start < pass->region_end &&
-                             end > pass->region_start
-                         ? KM_STYLE_REGION
-                         : KM_STYLE_DEFAULT;
+    bool selected;
+
+    if (pass->rectangle_active) {
+        selected = pass->hard_line >= pass->rectangle_top &&
+                   pass->hard_line <= pass->rectangle_bottom &&
+                   pass->hard_column < pass->rectangle_right &&
+                   (pass->hard_column >= pass->rectangle_left ||
+                    width > pass->rectangle_left - pass->hard_column);
+    } else {
+        selected = pass->region_active && start < pass->region_end &&
+                   end > pass->region_start;
+    }
+    pass->style_id = selected ? KM_STYLE_REGION : KM_STYLE_DEFAULT;
 }
 
 static KmStatus draw_ascii_cell(KmLayoutPass *pass, uint8_t glyph,
@@ -276,10 +291,10 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
         } else if (codepoint == '\t') {
             size_t spaces;
             record_cursor(pass, offset, pass->row, pass->column);
-            select_region_style(pass, offset, offset + consumed);
             spaces = km_config_tab_width() -
                      (pass->hard_column % km_config_tab_width());
             while (spaces-- != 0) {
+                select_region_style(pass, offset, offset + consumed, 1);
                 status = draw_ascii_cell(pass, ' ', error);
                 if (status != KM_OK) return status;
             }
@@ -287,7 +302,7 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
             record_cursor(pass, offset, pass->row, pass->column);
         } else if (is_ascii_control(codepoint)) {
             record_cursor(pass, offset, pass->row, pass->column);
-            select_region_style(pass, offset, offset + consumed);
+            select_region_style(pass, offset, offset + consumed, 2);
             status = draw_control(pass, codepoint, error);
             if (status != KM_OK) return status;
             offset += consumed;
@@ -308,7 +323,7 @@ static KmStatus run_layout_pass(KmLayoutPass *pass, KmError *error)
             end = grapheme.end;
             width = grapheme.width;
             combining_only = grapheme.combining_only;
-            select_region_style(pass, offset, end);
+            select_region_style(pass, offset, end, width);
             too_wide = width > pass->columns;
             if (too_wide) width = 1;
             status = wrap_before(pass, width, error);
@@ -504,6 +519,17 @@ static size_t line_number_gutter(const uint8_t *text, size_t len,
     return gutter;
 }
 
+static size_t logical_line_at(const uint8_t *text, size_t point)
+{
+    size_t line = 0;
+    size_t i;
+
+    for (i = 0; i < point; ++i) {
+        if (text[i] == '\n') ++line;
+    }
+    return line;
+}
+
 KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
                         size_t rows, size_t columns, size_t scroll_row,
                         const char *message, const char *completion,
@@ -575,6 +601,42 @@ KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
         mark.v < point.v ? mark.v - start.v : point.v - start.v;
     pass_template.region_end =
         mark.v < point.v ? point.v - start.v : mark.v - start.v;
+    pass_template.rectangle_active =
+        pass_template.region_active && km_buffer_rectangle_mark_mode(buffer);
+    if (pass_template.rectangle_active) {
+        size_t point_position = point.v - start.v;
+        size_t mark_position = mark.v - start.v;
+        size_t point_line_start = point_position;
+        size_t mark_line_start = mark_position;
+        size_t point_column;
+        size_t mark_column;
+        size_t point_line;
+        size_t mark_line;
+
+        while (point_line_start != 0 &&
+               text[point_line_start - 1] != '\n') {
+            --point_line_start;
+        }
+        while (mark_line_start != 0 && text[mark_line_start - 1] != '\n') {
+            --mark_line_start;
+        }
+        status = km_unicode_line_column_at(
+            text, len, point_line_start, point_position, &point_column, error);
+        if (status != KM_OK) goto fail;
+        status = km_unicode_line_column_at(
+            text, len, mark_line_start, mark_position, &mark_column, error);
+        if (status != KM_OK) goto fail;
+        point_line = logical_line_at(text, point_position);
+        mark_line = logical_line_at(text, mark_position);
+        pass_template.rectangle_top =
+            point_line < mark_line ? point_line : mark_line;
+        pass_template.rectangle_bottom =
+            point_line < mark_line ? mark_line : point_line;
+        pass_template.rectangle_left =
+            point_column < mark_column ? point_column : mark_column;
+        pass_template.rectangle_right =
+            point_column < mark_column ? mark_column : point_column;
+    }
     pass = pass_template;
     status = run_layout_pass(&pass, error);
     if (status != KM_OK) goto fail;

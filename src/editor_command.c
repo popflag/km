@@ -78,6 +78,8 @@ struct KmCommandLoop {
     bool completion_explicit;
     KmKillEntry *kill_ring;
     size_t kill_count;
+    KmKillEntry *killed_rectangle;
+    size_t killed_rectangle_count;
     KmBuffer *yank_buffer;
     KmRevision yank_revision;
     size_t yank_start;
@@ -118,6 +120,18 @@ static KmStatus begin_prompt(KmCommandLoop *loop, KmPromptKind kind,
                              KmError *error);
 static size_t encode_scalar(uint32_t codepoint, uint8_t bytes[4]);
 static void clear_query_replace(KmCommandLoop *loop);
+
+static void clear_killed_rectangle(KmCommandLoop *loop)
+{
+    size_t i;
+
+    for (i = 0; i < loop->killed_rectangle_count; ++i) {
+        free(loop->killed_rectangle[i].text);
+    }
+    free(loop->killed_rectangle);
+    loop->killed_rectangle = NULL;
+    loop->killed_rectangle_count = 0;
+}
 
 typedef struct {
     int id;
@@ -1330,6 +1344,7 @@ static KmStatus command_set_mark(KmCommandLoop *loop, KmView *view,
                 cycled;
         }
         view->buffer->mark_active = false;
+        view->buffer->rectangle_mark_mode = false;
         view->preferred_column_set = false;
         return KM_OK;
     }
@@ -1447,6 +1462,451 @@ static KmStatus region_bounds(KmView *view, KmBytePos *out_start,
     return KM_OK;
 }
 
+typedef struct {
+    uint8_t *text;
+    size_t len;
+    KmBytePos base;
+    size_t top;
+    size_t bottom;
+    size_t left;
+    size_t right;
+    size_t rows;
+} KmRectangleGeometry;
+
+static void free_rectangle_entries(KmKillEntry *entries, size_t count)
+{
+    size_t i;
+
+    if (entries == NULL) return;
+    for (i = 0; i < count; ++i) free(entries[i].text);
+    free(entries);
+}
+
+static KmStatus rectangle_geometry(KmView *view, KmRectangleGeometry *geometry,
+                                   KmError *error)
+{
+    KmBytePos region_start;
+    KmBytePos region_end;
+    KmBytePos mark;
+    size_t point;
+    size_t mark_position;
+    size_t point_line;
+    size_t mark_line;
+    size_t point_column;
+    size_t mark_column;
+    size_t line;
+    KmStatus status;
+
+    *geometry = (KmRectangleGeometry){0};
+    status = region_bounds(view, &region_start, &region_end, error);
+    if (status != KM_OK) return status;
+    geometry->base = km_buffer_accessible_start(view->buffer);
+    status = copy_accessible_text(view->buffer, &geometry->text, &geometry->len,
+                                  &point, view, error);
+    if (status != KM_OK) return status;
+    mark = km_anchor_get(view->buffer->mark);
+    mark_position = mark.v - geometry->base.v;
+    point_line = line_start_at(geometry->text, point);
+    mark_line = line_start_at(geometry->text, mark_position);
+    status = km_unicode_line_column_at(geometry->text, geometry->len,
+                                       point_line, point, &point_column, error);
+    if (status != KM_OK) goto fail;
+    status = km_unicode_line_column_at(geometry->text, geometry->len,
+                                       mark_line, mark_position, &mark_column,
+                                       error);
+    if (status != KM_OK) goto fail;
+    geometry->top = point_line < mark_line ? point_line : mark_line;
+    geometry->bottom = point_line < mark_line ? mark_line : point_line;
+    geometry->left = point_column < mark_column ? point_column : mark_column;
+    geometry->right = point_column < mark_column ? mark_column : point_column;
+    geometry->rows = 1;
+    for (line = geometry->top; line < geometry->bottom;) {
+        size_t next = next_line_at(geometry->text, geometry->len, line);
+        if (next <= line || geometry->rows == SIZE_MAX) {
+            status = fail(error, KM_ERR_INVALID, "rectangle geometry");
+            goto fail;
+        }
+        line = next;
+        ++geometry->rows;
+    }
+    return KM_OK;
+
+fail:
+    free(geometry->text);
+    *geometry = (KmRectangleGeometry){0};
+    return status;
+}
+
+static KmStatus rectangle_token(const uint8_t *text, size_t len, size_t offset,
+                                size_t column, size_t *out_offset,
+                                size_t *out_column, bool *out_tab,
+                                KmError *error)
+{
+    int32_t codepoint;
+    size_t consumed;
+    size_t width;
+    KmStatus status = km_unicode_decode(text, len, offset, &codepoint,
+                                        &consumed, error);
+
+    if (status != KM_OK) return status;
+    *out_tab = codepoint == '\t';
+    if (*out_tab) {
+        width = km_config_tab_width() - column % km_config_tab_width();
+        *out_offset = offset + consumed;
+    } else if ((codepoint >= 0 && codepoint < 0x20) || codepoint == 0x7f) {
+        width = 2;
+        *out_offset = offset + consumed;
+    } else {
+        KmGrapheme grapheme;
+        status = km_unicode_next_grapheme(text, len, offset, &grapheme, error);
+        if (status != KM_OK) return status;
+        width = grapheme.width;
+        *out_offset = grapheme.end;
+    }
+    if (column > SIZE_MAX - width) {
+        return fail(error, KM_ERR_INVALID, "rectangle column");
+    }
+    *out_column = column + width;
+    return KM_OK;
+}
+
+static KmStatus rectangle_kill_line(
+    const KmRectangleGeometry *geometry, size_t line_start, size_t line_end,
+    uint32_t ordinal, KmKillEntry *entry, KmSplice *splice, bool *has_splice,
+    uint8_t **replacement, KmError *error)
+{
+    size_t width = geometry->right - geometry->left;
+    size_t line_bytes = line_end - line_start;
+    size_t capacity;
+    size_t used = 0;
+    size_t offset = line_start;
+    size_t column = 0;
+    size_t edit_start = SIZE_MAX;
+    size_t edit_end = 0;
+    size_t replacement_spaces = 0;
+    KmStatus status = KM_OK;
+
+    *entry = (KmKillEntry){0};
+    *splice = (KmSplice){0};
+    *has_splice = false;
+    *replacement = NULL;
+    if (line_bytes > SIZE_MAX - width) {
+        return fail(error, KM_ERR_OOM, "kill rectangle");
+    }
+    capacity = line_bytes + width;
+    if (capacity != 0) {
+        entry->text = (uint8_t *)malloc(capacity);
+        if (entry->text == NULL) return fail(error, KM_ERR_OOM, "kill rectangle");
+    }
+    while (offset < line_end && column < geometry->right) {
+        size_t next_offset = offset;
+        size_t next_column = column;
+        bool tab = false;
+
+        status = rectangle_token(geometry->text, geometry->len, offset, column,
+                                 &next_offset, &next_column, &tab, error);
+        if (status != KM_OK) goto fail;
+        if (column < geometry->right && next_column > geometry->left) {
+            size_t overlap_start = column > geometry->left
+                                       ? column
+                                       : geometry->left;
+            size_t overlap_end = next_column < geometry->right
+                                     ? next_column
+                                     : geometry->right;
+            size_t overlap = overlap_end - overlap_start;
+            size_t bytes = next_offset - offset;
+
+            if (tab) {
+                memset(entry->text + used, ' ', overlap);
+                used += overlap;
+                if (replacement_spaces >
+                        SIZE_MAX - (overlap_start - column) ||
+                    replacement_spaces + (overlap_start - column) >
+                        SIZE_MAX - (next_column - overlap_end)) {
+                    status = fail(error, KM_ERR_OOM, "kill rectangle");
+                    goto fail;
+                }
+                replacement_spaces += overlap_start - column;
+                replacement_spaces += next_column - overlap_end;
+            } else {
+                memcpy(entry->text + used, geometry->text + offset, bytes);
+                used += bytes;
+            }
+            if (edit_start == SIZE_MAX) edit_start = offset;
+            edit_end = next_offset;
+        }
+        offset = next_offset;
+        column = next_column;
+    }
+    if (column < geometry->right) {
+        size_t padding_start = column > geometry->left
+                                   ? column
+                                   : geometry->left;
+        size_t padding = geometry->right - padding_start;
+        memset(entry->text + used, ' ', padding);
+        used += padding;
+    }
+    entry->len = used;
+    if (edit_start != SIZE_MAX) {
+        if (replacement_spaces != 0) {
+            *replacement = (uint8_t *)malloc(replacement_spaces);
+            if (*replacement == NULL) {
+                status = fail(error, KM_ERR_OOM, "kill rectangle");
+                goto fail;
+            }
+            memset(*replacement, ' ', replacement_spaces);
+        }
+        *splice = (KmSplice){
+            {geometry->base.v + edit_start},
+            {geometry->base.v + edit_end},
+            *replacement,
+            replacement_spaces,
+            ordinal,
+        };
+        *has_splice = true;
+    }
+    return KM_OK;
+
+fail:
+    free(entry->text);
+    free(*replacement);
+    *entry = (KmKillEntry){0};
+    *replacement = NULL;
+    return status;
+}
+
+static KmStatus command_rectangle_mark_mode(KmCommandLoop *loop, KmView *view,
+                                            int64_t argument, KmError *error)
+{
+    bool enable = loop->command_has_argument
+                      ? argument > 0
+                      : !view->buffer->rectangle_mark_mode;
+
+    if (enable && !view->buffer->rectangle_mark_mode) {
+        KmBytePos point;
+        KmBytePos start;
+        KmBytePos end;
+        KmMarkPlan plan;
+        KmStatus status = validate_view(view, false, &point, &start, &end,
+                                        error);
+        if (status != KM_OK) return status;
+        status = prepare_mark(view->buffer, point, &plan, error);
+        if (status != KM_OK) return status;
+        commit_mark(view->buffer, &plan, true);
+    }
+    view->buffer->rectangle_mark_mode = enable;
+    return KM_OK;
+}
+
+static KmStatus command_kill_rectangle(KmCommandLoop *loop, KmView *view,
+                                       int64_t argument, KmError *error)
+{
+    KmRectangleGeometry geometry;
+    KmKillEntry *entries = NULL;
+    KmSplice *splices = NULL;
+    uint8_t **replacements = NULL;
+    size_t splice_count = 0;
+    size_t line;
+    size_t row;
+    KmStatus status;
+
+    if (argument != 1) return fail(error, KM_ERR_INVALID, "kill rectangle");
+    if (view->buffer->read_only) {
+        return fail(error, KM_ERR_PERMISSION, "kill rectangle");
+    }
+    status = rectangle_geometry(view, &geometry, error);
+    if (status != KM_OK) return status;
+    if (geometry.rows > UINT32_MAX ||
+        geometry.rows > SIZE_MAX / sizeof(*entries) ||
+        geometry.rows > SIZE_MAX / sizeof(*splices) ||
+        geometry.rows > SIZE_MAX / sizeof(*replacements)) {
+        status = fail(error, KM_ERR_OOM, "kill rectangle");
+        goto done;
+    }
+    entries = (KmKillEntry *)calloc(geometry.rows, sizeof(*entries));
+    splices = (KmSplice *)calloc(geometry.rows, sizeof(*splices));
+    replacements = (uint8_t **)calloc(geometry.rows, sizeof(*replacements));
+    if (entries == NULL || splices == NULL || replacements == NULL) {
+        status = fail(error, KM_ERR_OOM, "kill rectangle");
+        goto done;
+    }
+    line = geometry.top;
+    for (row = 0; row < geometry.rows; ++row) {
+        KmSplice splice;
+        bool has_splice;
+        status = rectangle_kill_line(
+            &geometry, line, line_end_at(geometry.text, geometry.len, line),
+            (uint32_t)row, &entries[row], &splice, &has_splice,
+            &replacements[row], error);
+        if (status != KM_OK) goto done;
+        if (has_splice) splices[splice_count++] = splice;
+        if (row + 1 < geometry.rows) {
+            line = next_line_at(geometry.text, geometry.len, line);
+        }
+    }
+    status = km_document_apply(
+        view->buffer->document, splices, splice_count,
+        (KmTxnMeta){km_document_revision(view->buffer->document),
+                    KM_COMMAND_KILL_RECTANGLE},
+        error);
+    if (status != KM_OK) goto done;
+    reset_preferred_columns(view->buffer);
+    clear_killed_rectangle(loop);
+    loop->killed_rectangle = entries;
+    loop->killed_rectangle_count = geometry.rows;
+    entries = NULL;
+
+done:
+    if (replacements != NULL) {
+        for (row = 0; row < geometry.rows; ++row) free(replacements[row]);
+    }
+    free(replacements);
+    free(splices);
+    free_rectangle_entries(entries, geometry.rows);
+    free(geometry.text);
+    return status;
+}
+
+static KmStatus command_yank_rectangle(KmCommandLoop *loop, KmView *view,
+                                       int64_t argument, KmError *error)
+{
+    KmAnchorMove moves[2];
+    KmBytePos point;
+    KmBytePos base;
+    KmBytePos end;
+    KmMarkPlan mark_plan;
+    uint8_t *text = NULL;
+    KmSplice *splices = NULL;
+    uint8_t **payloads = NULL;
+    size_t len;
+    size_t position;
+    size_t target_column;
+    size_t line;
+    size_t row;
+    size_t final_point;
+    bool line_exists = true;
+    bool rectangle_mark_mode;
+    KmStatus status;
+
+    if (argument != 1 || loop->killed_rectangle_count == 0 ||
+        loop->killed_rectangle_count > UINT32_MAX) {
+        return fail(error, KM_ERR_INVALID, "yank rectangle");
+    }
+    status = validate_view(view, true, &point, &base, &end, error);
+    if (status != KM_OK) return status;
+    status = copy_accessible_text(view->buffer, &text, &len, &position, view,
+                                  error);
+    if (status != KM_OK) return status;
+    line = line_start_at(text, position);
+    status = km_unicode_line_column_at(text, len, line, position,
+                                       &target_column, error);
+    if (status != KM_OK) goto done;
+    status = prepare_mark(view->buffer, point, &mark_plan, error);
+    if (status != KM_OK) goto done;
+    rectangle_mark_mode = view->buffer->rectangle_mark_mode;
+    if (loop->killed_rectangle_count > SIZE_MAX / sizeof(*splices) ||
+        loop->killed_rectangle_count > SIZE_MAX / sizeof(*payloads)) {
+        status = fail(error, KM_ERR_OOM, "yank rectangle");
+        goto discard_mark;
+    }
+    splices = (KmSplice *)calloc(loop->killed_rectangle_count,
+                                 sizeof(*splices));
+    payloads = (uint8_t **)calloc(loop->killed_rectangle_count,
+                                  sizeof(*payloads));
+    if (splices == NULL || payloads == NULL) {
+        status = fail(error, KM_ERR_OOM, "yank rectangle");
+        goto discard_mark;
+    }
+    for (row = 0; row < loop->killed_rectangle_count; ++row) {
+        const KmKillEntry *entry = &loop->killed_rectangle[row];
+        size_t insertion;
+        size_t actual_column;
+        size_t padding;
+        size_t prefix = 0;
+        size_t payload_len;
+
+        if (row == 0) {
+            insertion = position;
+            actual_column = target_column;
+        } else if (line_exists) {
+            size_t line_end = line_end_at(text, len, line);
+            status = km_unicode_line_position_at_column(
+                text, len, line, line_end, target_column, &insertion,
+                &actual_column, error);
+            if (status != KM_OK) goto discard_mark;
+        } else {
+            insertion = len;
+            actual_column = 0;
+            prefix = 1;
+        }
+        padding = target_column - actual_column;
+        if (prefix > SIZE_MAX - padding ||
+            prefix + padding > SIZE_MAX - entry->len) {
+            status = fail(error, KM_ERR_OOM, "yank rectangle");
+            goto discard_mark;
+        }
+        payload_len = prefix + padding + entry->len;
+        if (payload_len != 0) {
+            payloads[row] = (uint8_t *)malloc(payload_len);
+            if (payloads[row] == NULL) {
+                status = fail(error, KM_ERR_OOM, "yank rectangle");
+                goto discard_mark;
+            }
+            if (prefix != 0) payloads[row][0] = '\n';
+            memset(payloads[row] + prefix, ' ', padding);
+            if (entry->len != 0) {
+                memcpy(payloads[row] + prefix + padding, entry->text,
+                       entry->len);
+            }
+        }
+        splices[row] = (KmSplice){
+            {base.v + insertion}, {base.v + insertion}, payloads[row],
+            payload_len, (uint32_t)row,
+        };
+        if (row == 0 || line_exists) {
+            size_t line_end = line_end_at(text, len, line);
+            if (line_end < len) {
+                line = line_end + 1;
+            } else {
+                line_exists = false;
+            }
+        }
+    }
+    final_point = splices[loop->killed_rectangle_count - 1].start.v;
+    for (row = 0; row < loop->killed_rectangle_count; ++row) {
+        if (final_point > SIZE_MAX - splices[row].insert_len) {
+            status = fail(error, KM_ERR_INVALID, "yank rectangle");
+            goto discard_mark;
+        }
+        final_point += splices[row].insert_len;
+    }
+    moves[0] = (KmAnchorMove){view->point, {final_point}};
+    moves[1] = (KmAnchorMove){view->buffer->mark, point};
+    status = km_document_apply_and_set_anchors(
+        view->buffer->document, splices, loop->killed_rectangle_count,
+        (KmTxnMeta){km_document_revision(view->buffer->document),
+                    KM_COMMAND_YANK_RECTANGLE},
+        moves, 2, error);
+    if (status != KM_OK) goto discard_mark;
+    commit_mark(view->buffer, &mark_plan, true);
+    view->buffer->rectangle_mark_mode = rectangle_mark_mode;
+    reset_preferred_columns(view->buffer);
+    goto done;
+
+discard_mark:
+    discard_mark(&mark_plan);
+done:
+    if (payloads != NULL) {
+        for (row = 0; row < loop->killed_rectangle_count; ++row) {
+            free(payloads[row]);
+        }
+    }
+    free(payloads);
+    free(splices);
+    free(text);
+    return status;
+}
+
 static KmStatus command_kill_region(KmCommandLoop *loop, KmView *view,
                                     int64_t argument, KmError *error)
 {
@@ -1487,6 +1947,7 @@ static KmStatus command_kill_region(KmCommandLoop *loop, KmView *view,
     }
     commit_kill(loop, entry, replace);
     view->buffer->mark_active = false;
+    view->buffer->rectangle_mark_mode = false;
     return KM_OK;
 }
 
@@ -3382,6 +3843,7 @@ static KmStatus command_keyboard_quit(KmCommandLoop *loop, KmView *view,
                                accessible_search_origin(loop, view), error);
         finish_search(loop);
         view->buffer->mark_active = false;
+        view->buffer->rectangle_mark_mode = false;
     } else if (context == KM_KEYMAP_MINIBUFFER ||
                context == KM_KEYMAP_CONFIRMATION) {
         bool query = loop->prompt_kind == KM_PROMPT_QUERY_FROM ||
@@ -3395,6 +3857,7 @@ static KmStatus command_keyboard_quit(KmCommandLoop *loop, KmView *view,
         }
     } else {
         view->buffer->mark_active = false;
+        view->buffer->rectangle_mark_mode = false;
     }
     loop->quit_requested = true;
     return status;
@@ -3585,14 +4048,20 @@ static KmStatus dispatch_isearch_text(KmCommandLoop *loop, KmView *view,
 typedef struct {
     KmKeymapId keymap;
     size_t count;
-    KmKeyStroke sequence[2];
+    KmKeyStroke sequence[3];
     const char *command_name;
 } KmDefaultBinding;
 
 #define KM_BIND1(map, code, mods, command)                                     \
-    { (map), 1, {{(code), (mods)}, {0, 0}}, (command) }
+    { (map), 1, {{(code), (mods)}, {0, 0}, {0, 0}}, (command) }
 #define KM_BIND2(map, code1, mods1, code2, mods2, command)                    \
-    { (map), 2, {{(code1), (mods1)}, {(code2), (mods2)}}, (command) }
+    { (map), 2, {{(code1), (mods1)}, {(code2), (mods2)}, {0, 0}}, (command) }
+#define KM_BIND3(map, code1, mods1, code2, mods2, code3, mods3, command)      \
+    {                                                                          \
+        (map), 3,                                                              \
+        {{(code1), (mods1)}, {(code2), (mods2)}, {(code3), (mods3)}},         \
+        (command)                                                              \
+    }
 
 static const KmDefaultBinding default_bindings[] = {
     KM_BIND1(KM_KEYMAP_GLOBAL, 'a', KM_MOD_CTRL, "beginning-of-line"),
@@ -3672,6 +4141,8 @@ static const KmDefaultBinding default_bindings[] = {
              "find-file"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'h', 0,
              "mark-whole-buffer"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, ' ', 0,
+             "rectangle-mark-mode"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, '0', 0, "delete-window"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, '1', 0,
              "delete-other-windows"),
@@ -3690,6 +4161,10 @@ static const KmDefaultBinding default_bindings[] = {
              "exchange-point-and-mark"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 't', KM_MOD_CTRL,
              "transpose-lines"),
+    KM_BIND3(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'r', 0, 'k', 0,
+             "kill-rectangle"),
+    KM_BIND3(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'r', 0, 'y', 0,
+             "yank-rectangle"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'g', KM_MOD_ALT, 'c', 0, "goto-char"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'g', KM_MOD_ALT, 'c', KM_MOD_ALT,
              "goto-char"),
@@ -3733,6 +4208,7 @@ static const KmDefaultBinding default_bindings[] = {
 
 #undef KM_BIND1
 #undef KM_BIND2
+#undef KM_BIND3
 
 static KmStatus bind_configured_keys(KmCommandLoop *loop, KmError *error)
 {
@@ -3941,6 +4417,7 @@ void km_command_loop_destroy(KmCommandLoop *loop)
         size_t i;
         clear_completions(loop);
         clear_query_replace(loop);
+        clear_killed_rectangle(loop);
         free(loop->prompt_text);
         free(loop->search_query);
         for (i = 0; i < loop->kill_count; ++i) {

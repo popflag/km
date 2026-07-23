@@ -18,5 +18,11 @@ int km_unicode_cell_width(int32_t codepoint);
 KmStatus km_unicode_next_grapheme(const uint8_t *text, size_t len,
                                   size_t start, KmGrapheme *out,
                                   KmError *error);
+KmStatus km_unicode_line_column_at(const uint8_t *text, size_t len,
+                                   size_t start, size_t point,
+                                   size_t *out_column, KmError *error);
+KmStatus km_unicode_line_position_at_column(
+    const uint8_t *text, size_t len, size_t start, size_t end, size_t target,
+    size_t *out_position, size_t *out_column, KmError *error);
 
 #endif
