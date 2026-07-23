@@ -13,12 +13,24 @@ typedef struct {
     size_t hard_column;
 } KmLayoutResult;
 
+typedef struct {
+    const KmBuffer *buffer;
+    const KmView *view;
+    size_t scroll_row;
+    size_t rows;
+} KmLayoutWindow;
+
 KmStatus km_layout_view(const KmBuffer *buffer, const KmView *view,
                         size_t rows, size_t columns, size_t scroll_row,
                         const char *message, const char *completion,
                         bool prompt_active,
                         KmCellGrid **out_grid,
                         KmLayoutResult *out_result, KmError *error);
+KmStatus km_layout_frame(KmLayoutWindow *windows, size_t window_count,
+                         size_t selected_window, size_t rows, size_t columns,
+                         const char *message, const char *completion,
+                         bool prompt_active, KmCellGrid **out_grid,
+                         KmLayoutResult *out_result, KmError *error);
 KmStatus km_layout_scroll_view(const KmBuffer *buffer, KmView *view,
                                size_t rows, size_t columns,
                                size_t scroll_row, bool forward,

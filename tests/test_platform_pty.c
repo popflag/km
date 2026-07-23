@@ -123,10 +123,12 @@ static int run_probe(int terminate_with_signal, const char *path,
     struct termios before;
     struct termios after;
     struct winsize size = {37, 91, 0, 0};
+    struct winsize tiny = {2, 91, 0, 0};
     pid_t child;
     char output[32768] = {0};
     size_t output_len = 0;
     size_t resize_start;
+    size_t restore_start;
     int status = 0;
     int iteration;
     int result = 1;
@@ -179,8 +181,19 @@ static int run_probe(int terminate_with_signal, const char *path,
             '\r', 0xe4, 0xb8, 0xad, 'q',
             0x12, 0xe4, 0xb8, 0xad,
         };
+        static const unsigned char show_buffers[] = {
+            0x18, '2', 0x18, 'o', 0x18, 0x02,
+        };
+        static const unsigned char refresh_buffers[] = {
+            0x18, '1', 0x18, 0x02,
+        };
+        static const unsigned char refresh_from_list[] = {
+            0x18, 'o', 0x18, 0x02,
+        };
+        static const char selected_window_marker[] = "Zcheck";
         static const unsigned char exit_keys[] = {0x07, 0x18, 0x03, 'y'};
         size_t mode_start = output_len;
+        size_t refresh_start;
         if (write_bytes(master, disable_line_numbers,
                         sizeof(disable_line_numbers)) != 0 ||
             write_bytes(master, global_line_numbers,
@@ -190,6 +203,37 @@ static int run_probe(int terminate_with_signal, const char *path,
             wait_for_frame_without(
                 master, output, sizeof(output), &output_len, mode_start,
                 km_config_line_number_separator(), "M-x ", 2000) != 0 ||
+            write_bytes(master, show_buffers, sizeof(show_buffers)) != 0 ||
+            wait_for_text_after(master, output, sizeof(output), &output_len,
+                                mode_start, "*Buffer List*", 2000) != 0) {
+            goto kill_child;
+        }
+        refresh_start = output_len;
+        if (write_bytes(master, refresh_from_list,
+                        sizeof(refresh_from_list)) != 0 ||
+            write_bytes(master, selected_window_marker,
+                        sizeof(selected_window_marker) - 1u) != 0 ||
+            wait_for_text_after(master, output, sizeof(output), &output_len,
+                                refresh_start, selected_window_marker, 2000) !=
+                0) {
+            goto kill_child;
+        }
+        resize_start = output_len;
+        if (ioctl(master, TIOCSWINSZ, &tiny) != 0 ||
+            wait_for_text_after(master, output, sizeof(output), &output_len,
+                                resize_start, "\x1b[?25h", 2000) != 0) {
+            goto kill_child;
+        }
+        restore_start = output_len;
+        if (ioctl(master, TIOCSWINSZ, &size) != 0 ||
+            wait_for_text_after(master, output, sizeof(output), &output_len,
+                                restore_start, "*Buffer List*", 2000) != 0) {
+            goto kill_child;
+        }
+        refresh_start = output_len;
+        if (write_bytes(master, refresh_buffers, sizeof(refresh_buffers)) != 0 ||
+            wait_for_text_after(master, output, sizeof(output), &output_len,
+                                refresh_start, "*Buffer List*", 2000) != 0 ||
             write(master, edit, sizeof(edit)) != (ssize_t)sizeof(edit)) {
             goto kill_child;
         }

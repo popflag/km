@@ -689,6 +689,135 @@ fail:
     return status;
 }
 
+static KmStatus copy_grid_rows(KmCellGrid *destination, size_t destination_row,
+                               const KmCellGrid *source, size_t source_row,
+                               size_t row_count, KmError *error)
+{
+    size_t columns = km_cell_grid_columns(destination);
+    size_t row;
+
+    if (columns != km_cell_grid_columns(source) ||
+        destination_row > km_cell_grid_rows(destination) ||
+        row_count > km_cell_grid_rows(destination) - destination_row ||
+        source_row > km_cell_grid_rows(source) ||
+        row_count > km_cell_grid_rows(source) - source_row) {
+        return fail(error, KM_ERR_INVALID, "copy layout grid");
+    }
+    for (row = 0; row < row_count; ++row) {
+        size_t column;
+        for (column = 0; column < columns; ++column) {
+            const KmCell *cell =
+                km_cell_grid_cell(source, source_row + row, column);
+            const uint8_t *glyph;
+            size_t glyph_len;
+            KmStatus status;
+
+            if (cell == NULL || cell->width == 0 ||
+                (cell->flags & KM_CELL_CONTINUATION) != 0) {
+                continue;
+            }
+            glyph = km_cell_grid_cell_glyph(source, source_row + row, column,
+                                             &glyph_len);
+            if (glyph == NULL) continue;
+            status = km_cell_grid_put(destination, destination_row + row,
+                                      column, glyph, glyph_len, cell->width,
+                                      cell->style_id, error);
+            if (status != KM_OK) return status;
+        }
+    }
+    return KM_OK;
+}
+
+KmStatus km_layout_frame(KmLayoutWindow *windows, size_t window_count,
+                         size_t selected_window, size_t rows, size_t columns,
+                         const char *message, const char *completion,
+                         bool prompt_active, KmCellGrid **out_grid,
+                         KmLayoutResult *out_result, KmError *error)
+{
+    KmCellGrid *frame = NULL;
+    KmLayoutResult selected = {0};
+    size_t echo_rows;
+    size_t available_rows;
+    size_t minimum_rows;
+    size_t visible_count;
+    size_t base_rows;
+    size_t extra_rows;
+    size_t top = 0;
+    size_t i;
+    KmStatus status;
+
+    km_error_clear(error);
+    if (windows == NULL || window_count == 0 ||
+        selected_window >= window_count || rows == 0 || columns == 0 ||
+        out_grid == NULL || out_result == NULL) {
+        return fail(error, KM_ERR_INVALID, "layout frame");
+    }
+    echo_rows = rows > 1 ? 1u : 0u;
+    available_rows = rows - echo_rows;
+    minimum_rows = km_config_mode_line_format() ? 2u : 1u;
+    visible_count = window_count <= available_rows / minimum_rows
+                        ? window_count
+                        : 1u;
+    *out_grid = NULL;
+    *out_result = (KmLayoutResult){0};
+    status = km_cell_grid_create(rows, columns, &frame, error);
+    if (status != KM_OK) return status;
+    base_rows = available_rows / visible_count;
+    extra_rows = available_rows % visible_count;
+
+    for (i = 0; i < window_count; ++i) {
+        size_t visible_index = visible_count == 1 ? 0 : i;
+        size_t window_rows;
+        size_t layout_rows;
+        KmCellGrid *window_grid = NULL;
+        KmLayoutResult layout;
+
+        windows[i].rows = 0;
+        if (windows[i].buffer == NULL || windows[i].view == NULL ||
+            km_view_buffer(windows[i].view) != windows[i].buffer) {
+            status = fail(error, KM_ERR_INVALID, "layout frame");
+            goto fail;
+        }
+        if (visible_count == 1 && window_count != 1 && i != selected_window) {
+            continue;
+        }
+        window_rows = base_rows + (visible_index < extra_rows ? 1u : 0u);
+        layout_rows = window_rows + echo_rows;
+        status = km_layout_view(
+            windows[i].buffer, windows[i].view, layout_rows, columns,
+            windows[i].scroll_row, i == selected_window ? message : NULL,
+            i == selected_window ? completion : NULL,
+            i == selected_window && prompt_active, &window_grid, &layout,
+            error);
+        if (status != KM_OK) goto fail;
+        status = copy_grid_rows(frame, top, window_grid, 0, window_rows, error);
+        if (status == KM_OK && i == selected_window && echo_rows != 0) {
+            status = copy_grid_rows(frame, rows - 1, window_grid, window_rows,
+                                    1, error);
+        }
+        km_cell_grid_destroy(window_grid);
+        if (status != KM_OK) goto fail;
+        windows[i].scroll_row = layout.scroll_row;
+        windows[i].rows = window_rows;
+        if (i == selected_window) {
+            selected = layout;
+            if (prompt_active && echo_rows != 0) {
+                selected.cursor_row = rows - 1;
+            } else {
+                selected.cursor_row += top;
+            }
+        }
+        top += window_rows;
+    }
+    *out_grid = frame;
+    *out_result = selected;
+    return KM_OK;
+
+fail:
+    km_cell_grid_destroy(frame);
+    return status;
+}
+
 KmStatus km_layout_scroll_view(const KmBuffer *buffer, KmView *view,
                                size_t rows, size_t columns,
                                size_t scroll_row, bool forward,

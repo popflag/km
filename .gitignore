@@ -8,3 +8,6 @@
 /nob.ilk
 /.pi-subagents/
 /.agents/
+/.cache/
+/.github/
+/compile_commands.json

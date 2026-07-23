@@ -164,6 +164,22 @@ KM_PUBLIC_COMMAND(KM_COMMAND_GLOBAL_DISPLAY_LINE_NUMBERS_MODE, 55,
                   command_global_display_line_numbers_mode,
                   KM_CONTEXT(KM_KEYMAP_GLOBAL),
                   KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_SPLIT_WINDOW_BELOW, 56, "split-window-below",
+                  command_split_window_below, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_DELETE_WINDOW, 57, "delete-window",
+                  command_delete_window, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_DELETE_OTHER_WINDOWS, 58,
+                  "delete-other-windows", command_delete_other_windows,
+                  KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_OTHER_WINDOW, 59, "other-window",
+                  command_other_window, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
+KM_PUBLIC_COMMAND(KM_COMMAND_LIST_BUFFERS, 60, "list-buffers",
+                  command_list_buffers, KM_CONTEXT(KM_KEYMAP_GLOBAL),
+                  KM_COMMAND_MX | KM_COMMAND_RECORD_LAST)
 
 KM_INTERNAL_COMMAND(KM_INTERNAL_UNIVERSAL_ARGUMENT, 100, "universal-argument",
                     command_universal_argument, KM_CONTEXT(KM_KEYMAP_GLOBAL),

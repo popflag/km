@@ -484,6 +484,62 @@ static void test_move_to_window_line(void)
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
 }
 
+static void test_multi_window_frame(void)
+{
+    static const uint8_t first_text[] = "one\ntwo\nthree";
+    static const uint8_t second_text[] = "alpha\nbeta";
+    KmBuffer *first = NULL;
+    KmBuffer *second = NULL;
+    KmView *first_view = NULL;
+    KmView *second_view = NULL;
+    KmLayoutWindow windows[2];
+    KmCellGrid *grid = NULL;
+    KmLayoutResult layout;
+    KmError error;
+
+    CHECK(km_buffer_create_base(first_text, sizeof(first_text) - 1, &first,
+                                &error) == KM_OK);
+    CHECK(km_buffer_create_base(second_text, sizeof(second_text) - 1, &second,
+                                &error) == KM_OK);
+    CHECK(km_buffer_set_name(first, "first", &error) == KM_OK);
+    CHECK(km_buffer_set_name(second, "second", &error) == KM_OK);
+    CHECK(km_view_create(first, &first_view, &error) == KM_OK);
+    CHECK(km_view_create(second, &second_view, &error) == KM_OK);
+    windows[0] = (KmLayoutWindow){first, first_view, 0, 0};
+    windows[1] = (KmLayoutWindow){second, second_view, 0, 0};
+
+    CHECK(km_layout_frame(windows, 2, 1, 7, 20, "Ready", NULL, false,
+                          &grid, &layout, &error) == KM_OK);
+    CHECK(windows[0].rows == 3 && windows[1].rows == 3);
+    CHECK(km_cell_grid_cell(grid, 2, 0)->style_id == KM_STYLE_MODELINE);
+    CHECK(km_cell_grid_cell(grid, 5, 0)->style_id == KM_STYLE_MODELINE);
+    check_glyph(grid, 2, 3, (const uint8_t *)"f", 1);
+    check_glyph(grid, 5, 3, (const uint8_t *)"s", 1);
+    check_glyph(grid, 6, 0, (const uint8_t *)"R", 1);
+    CHECK(layout.cursor_row >= 3 && layout.cursor_row < 5);
+    km_cell_grid_destroy(grid);
+
+    CHECK(km_layout_frame(windows, 2, 1, 7, 20, "Find: ", " {a | b}", true,
+                          &grid, &layout, &error) == KM_OK);
+    CHECK(layout.cursor_row == 6);
+    check_glyph(grid, 6, 0, (const uint8_t *)"F", 1);
+    km_cell_grid_destroy(grid);
+
+    CHECK(km_layout_frame(windows, 2, 1, 2, 20, NULL, NULL, false, &grid,
+                          &layout, &error) == KM_OK);
+    CHECK(windows[0].rows == 0 && windows[1].rows == 1);
+    CHECK(layout.cursor_row == 0);
+    km_cell_grid_destroy(grid);
+    CHECK(km_layout_frame(windows, 2, 1, 7, 20, NULL, NULL, false, &grid,
+                          &layout, &error) == KM_OK);
+    CHECK(windows[0].rows == 3 && windows[1].rows == 3);
+    km_cell_grid_destroy(grid);
+    CHECK(km_view_destroy(second_view, &error) == KM_OK);
+    CHECK(km_view_destroy(first_view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(second, &error) == KM_OK);
+    CHECK(km_buffer_destroy(first, &error) == KM_OK);
+}
+
 int main(void)
 {
     test_configuration_contract();
@@ -495,6 +551,7 @@ int main(void)
     test_scroll_commands();
     test_recenter_scroll();
     test_move_to_window_line();
+    test_multi_window_frame();
     puts("layout tests passed");
     return 0;
 }

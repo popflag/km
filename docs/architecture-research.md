@@ -1,6 +1,6 @@
 # 类 GNU Emacs 文本编辑器架构调研记录
 
-> 状态：架构基线；Phase 0/1 已完成，Phase 2/3 的单 View 多 Buffer TUI 与
+> 状态：架构基线；Phase 0/1 已完成，Phase 2/3 的多 View 多 Buffer TUI 与
 > Phase 4 的安全保存纵切已实现
 > 调研日期：2026-07-20（UTC-08:00）
 > 目标语言：C17。原需求中的“C20”不是 ISO C 标准版本；若实际指 C++20，需要重新评估本文的类型、构建和插件 ABI 结论。
@@ -32,7 +32,7 @@
 
 ### 1.1 当前可运行纵切
 
-当前 `km [file]` 实现一个单 Frame/单 View、多 Buffer 的终端编辑器：
+当前 `km [file]` 实现一个单 Frame、多 View、多 Buffer 的终端编辑器：
 
 - 严格 UTF-8 文件加载，保留 UTF-8 BOM 和统一 LF/CRLF/CR policy；非法
   UTF-8、mixed EOL、symlink/reparse point 和多 hard-link 目标拒绝写入。
@@ -54,6 +54,12 @@
 - `C-x C-f` 通过 UTF-8 minibuffer 打开或创建文件；`C-x b` 按完整显示名
   切换 Buffer，空输入循环到下一个；`C-x k` 关闭当前 Buffer。关闭最后一个
   Buffer 会立即创建新的 `*scratch*`。
+- `C-x 2` 在当前 Window 下方分割并创建独立 View，`C-x o` 循环选择 Window，
+  `C-x 0` 删除当前 Window，`C-x 1` 保留当前 Window。各 Window 独立保存
+  point 和 visual scroll；frame 使用等高水平分割，每个 Window 有自己的
+  mode line，所有 Window 共享底部 echo area。`C-x C-b` 刷新只读
+  `*Buffer List*` 并显示到下一个 Window，保持当前 Window 选中。终端高度
+  暂时不足以容纳全部 Window 时只绘制当前 Window，恢复尺寸后重新显示全部。
 - dirty Buffer 的 `C-x k` 和存在任意 dirty Buffer 时的 `C-x C-c` 使用显式
   y/n 确认；`C-g` 取消。重复访问现有文件时按平台 file identity 复用
   Buffer；同名但不同目标使用 `<2>` 起的唯一 Buffer 名。
@@ -113,7 +119,7 @@
 - Renderer 当前仍执行完整 CellGrid frame 输出；front/back row diff 是下一
   个纯性能步骤，不影响上述编辑和数据安全契约。
 
-当前纵切不等于“完整 GNU Emacs”。多 Window、minibuffer 候选弹窗、历史与
+当前纵切不等于“完整 GNU Emacs”。递归/左右 Window 分割、minibuffer 候选弹窗、历史与
 模糊匹配、正则 search/replace、rectangle、keyboard macro、mode/keymap
 扩展和插件仍按
 后续 Phase 分别冻结行为与实现。
@@ -297,12 +303,12 @@ API。平台终端代码不直接修改 Document，只产生事件或返回显�
 
 Buffer 不被显示时使用 `saved_point`。View 第一次显示 Buffer 时从 saved point 初始化；窗口切换和 Buffer 切换的精确保存规则进入 Emacs 差分测试。
 
-当前单 View 应用层 registry 为每个 Buffer 保存一个 visual `scroll_row`，切换
-时同时恢复该 Buffer 的 point 和 scroll。它是现有 layout 显式接收 scroll
-参数下的最小实现；增加多 Window 时 scroll/start anchor 必须迁回各 View，
-不能继续挂在 Buffer registry 上。当前 `C-v` / `M-v` 通过 command request
-把 prefix 语义交给应用层，再由 layout 按正文高度和 EGC/cell wrap 计算新
-`scroll_row` 与必要的 point 夹取；command loop 不持有终端尺寸。
+应用层 Window registry 为每个 `KmView` 保存 visual `scroll_row` 和当前
+viewport 高度；同一 Buffer 显示在多个 Window 时 point 与 scroll 相互独立。
+`C-v` / `M-v` 通过 command request 把 prefix 语义交给应用层，再由 layout
+按所选 Window 的正文高度和 EGC/cell wrap 计算新 `scroll_row` 与必要的 point
+夹取；command loop 不持有终端尺寸。scroll/start 的 anchor 化仍可在需要
+稳定保存 document position 时继续收敛到 `KmView` 私有结构。
 
 ### 5.4 最小 C 结构草图
 

@@ -1844,6 +1844,59 @@ static KmStatus command_global_display_line_numbers_mode(
     return KM_OK;
 }
 
+static KmStatus request_window_command(KmCommandLoop *loop,
+                                       KmCommandRequest request,
+                                       int64_t argument, KmError *error)
+{
+    if (loop == NULL) return fail(error, KM_ERR_INVALID, "window command");
+    loop->request = request;
+    loop->request_argument = argument;
+    loop->request_has_argument = loop->command_has_argument;
+    km_error_clear(error);
+    return KM_OK;
+}
+
+static KmStatus command_split_window_below(KmCommandLoop *loop, KmView *view,
+                                           int64_t argument, KmError *error)
+{
+    (void)view;
+    return request_window_command(loop, KM_COMMAND_REQUEST_SPLIT_WINDOW_BELOW,
+                                  argument, error);
+}
+
+static KmStatus command_delete_window(KmCommandLoop *loop, KmView *view,
+                                      int64_t argument, KmError *error)
+{
+    (void)view;
+    return request_window_command(loop, KM_COMMAND_REQUEST_DELETE_WINDOW,
+                                  argument, error);
+}
+
+static KmStatus command_delete_other_windows(KmCommandLoop *loop, KmView *view,
+                                             int64_t argument,
+                                             KmError *error)
+{
+    (void)view;
+    return request_window_command(
+        loop, KM_COMMAND_REQUEST_DELETE_OTHER_WINDOWS, argument, error);
+}
+
+static KmStatus command_other_window(KmCommandLoop *loop, KmView *view,
+                                     int64_t argument, KmError *error)
+{
+    (void)view;
+    return request_window_command(loop, KM_COMMAND_REQUEST_OTHER_WINDOW,
+                                  argument, error);
+}
+
+static KmStatus command_list_buffers(KmCommandLoop *loop, KmView *view,
+                                     int64_t argument, KmError *error)
+{
+    (void)view;
+    return request_window_command(loop, KM_COMMAND_REQUEST_LIST_BUFFERS,
+                                  argument, error);
+}
+
 static KmStatus command_universal_argument(KmCommandLoop *loop, KmView *view,
                                            int64_t argument, KmError *error);
 static KmStatus command_request_exit(KmCommandLoop *loop, KmView *view,
@@ -3611,13 +3664,21 @@ static const KmDefaultBinding default_bindings[] = {
     KM_BIND1(KM_KEYMAP_GLOBAL, 'x', KM_MOD_ALT, "execute-extended-command"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'b', 0,
              "switch-to-buffer"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'b', KM_MOD_CTRL,
+             "list-buffers"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'c', KM_MOD_CTRL,
              "exit-editor"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'f', KM_MOD_CTRL,
              "find-file"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'h', 0,
              "mark-whole-buffer"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, '0', 0, "delete-window"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, '1', 0,
+             "delete-other-windows"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, '2', 0,
+             "split-window-below"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'k', 0, "kill-buffer"),
+    KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'o', 0, "other-window"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'r', KM_MOD_CTRL,
              "undo-redo"),
     KM_BIND2(KM_KEYMAP_GLOBAL, 'x', KM_MOD_CTRL, 'o', KM_MOD_CTRL,

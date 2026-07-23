@@ -2243,6 +2243,39 @@ static void test_goto_char_and_viewport_requests(void)
     CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
 }
 
+static void test_window_requests(void)
+{
+    KmBuffer *buffer = make_base(NULL, 0);
+    KmView *view = NULL;
+    KmCommandLoop *loop = NULL;
+    KmError error;
+
+    CHECK(km_view_create(buffer, &view, &error) == KM_OK);
+    CHECK(km_command_loop_create(&loop, &error) == KM_OK);
+#define CHECK_WINDOW_REQUEST(key, modifiers, expected)                         \
+    do {                                                                       \
+        CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);    \
+        CHECK(dispatch_key(loop, view, (key), (modifiers), &error) == KM_OK);  \
+        CHECK(km_command_loop_request(loop) == (expected));                    \
+        km_command_loop_clear_request(loop);                                   \
+    } while (0)
+    CHECK_WINDOW_REQUEST('2', 0, KM_COMMAND_REQUEST_SPLIT_WINDOW_BELOW);
+    CHECK_WINDOW_REQUEST('0', 0, KM_COMMAND_REQUEST_DELETE_WINDOW);
+    CHECK_WINDOW_REQUEST('1', 0, KM_COMMAND_REQUEST_DELETE_OTHER_WINDOWS);
+    CHECK_WINDOW_REQUEST('o', 0, KM_COMMAND_REQUEST_OTHER_WINDOW);
+    CHECK_WINDOW_REQUEST('b', KM_MOD_CTRL, KM_COMMAND_REQUEST_LIST_BUFFERS);
+#undef CHECK_WINDOW_REQUEST
+    CHECK(dispatch_key(loop, view, '3', KM_MOD_ALT, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'x', KM_MOD_CTRL, &error) == KM_OK);
+    CHECK(dispatch_key(loop, view, 'o', 0, &error) == KM_OK);
+    CHECK(km_command_loop_request(loop) == KM_COMMAND_REQUEST_OTHER_WINDOW);
+    CHECK(km_command_loop_request_has_argument(loop));
+    CHECK(km_command_loop_request_argument(loop) == 3);
+    km_command_loop_destroy(loop);
+    CHECK(km_view_destroy(view, &error) == KM_OK);
+    CHECK(km_buffer_destroy(buffer, &error) == KM_OK);
+}
+
 int main(void)
 {
     test_ownership();
@@ -2272,5 +2305,6 @@ int main(void)
     test_case_space_and_line_commands();
     test_quoted_insert_and_query_replace();
     test_goto_char_and_viewport_requests();
+    test_window_requests();
     return 0;
 }
