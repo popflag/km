@@ -33,6 +33,23 @@ typedef struct {
     size_t current;
 } AppWindows;
 
+typedef struct {
+    char error[256];
+    char message[256];
+    char completion[4096];
+    KmPlatform *platform;
+    KmCellGrid *front_grid;
+    KmCommandLoop *loop;
+    AppBuffers buffers;
+    AppWindows windows;
+} App;
+
+typedef enum {
+    APP_STEP_ERROR = -1,
+    APP_STEP_EXIT = 0,
+    APP_STEP_CONTINUE = 1
+} AppStep;
+
 static KmStatus app_fail(KmError *error, KmStatus status,
                          const char *operation)
 {
@@ -664,11 +681,7 @@ static void set_core_error(char *destination, size_t capacity,
                    km_status_string(error->code));
 }
 
-static int redraw(KmPlatform *platform, KmCellGrid **front,
-                  const AppBuffers *buffers, AppWindows *windows,
-                  const char *message,
-                  const char *completion, bool prompt_active, char *error,
-                  size_t error_cap)
+static int redraw(App *app, bool prompt_active)
 {
     KmCellGrid *grid = NULL;
     KmLayoutResult layout;
@@ -679,433 +692,434 @@ static int redraw(KmPlatform *platform, KmCellGrid **front,
     size_t i;
     int result;
 
-    if (windows->count == 0 || windows->current >= windows->count ||
-        windows->count > SIZE_MAX / sizeof(*layout_windows)) {
-        (void)snprintf(error, error_cap, "layout frame: invalid state");
+    if (app->windows.count == 0 ||
+        app->windows.current >= app->windows.count ||
+        app->windows.count > SIZE_MAX / sizeof(*layout_windows)) {
+        (void)snprintf(app->error, sizeof(app->error),
+                       "layout frame: invalid state");
         return -1;
     }
     layout_windows =
-        (KmLayoutWindow *)calloc(windows->count, sizeof(*layout_windows));
+        (KmLayoutWindow *)calloc(app->windows.count, sizeof(*layout_windows));
     if (layout_windows == NULL) {
-        (void)snprintf(error, error_cap, "layout frame: out of memory");
+        (void)snprintf(app->error, sizeof(app->error),
+                       "layout frame: out of memory");
         return -1;
     }
-    for (i = 0; i < windows->count; ++i) {
-        if (windows->items[i].buffer >= buffers->count) {
+    for (i = 0; i < app->windows.count; ++i) {
+        if (app->windows.items[i].buffer >= app->buffers.count) {
             free(layout_windows);
-            (void)snprintf(error, error_cap, "layout frame: invalid buffer");
+            (void)snprintf(app->error, sizeof(app->error),
+                           "layout frame: invalid buffer");
             return -1;
         }
         layout_windows[i].buffer =
-            buffers->items[windows->items[i].buffer].buffer;
-        layout_windows[i].view = windows->items[i].view;
-        layout_windows[i].scroll_row = windows->items[i].scroll_row;
+            app->buffers.items[app->windows.items[i].buffer].buffer;
+        layout_windows[i].view = app->windows.items[i].view;
+        layout_windows[i].scroll_row = app->windows.items[i].scroll_row;
     }
-    km_platform_size(platform, &columns, &rows);
-    if (km_layout_frame(layout_windows, windows->count, windows->current, rows,
-                        columns, message, completion, prompt_active, &grid,
-                        &layout, &core_error) != KM_OK) {
+    km_platform_size(app->platform, &columns, &rows);
+    if (km_layout_frame(layout_windows, app->windows.count,
+                        app->windows.current, rows, columns, app->message,
+                        app->completion, prompt_active, &grid, &layout,
+                        &core_error) != KM_OK) {
         free(layout_windows);
-        set_core_error(error, error_cap, &core_error);
+        set_core_error(app->error, sizeof(app->error), &core_error);
         return -1;
     }
-    for (i = 0; i < windows->count; ++i) {
-        windows->items[i].scroll_row = layout_windows[i].scroll_row;
-        windows->items[i].rows = layout_windows[i].rows;
+    for (i = 0; i < app->windows.count; ++i) {
+        app->windows.items[i].scroll_row = layout_windows[i].scroll_row;
+        app->windows.items[i].rows = layout_windows[i].rows;
     }
     free(layout_windows);
-    result = km_platform_draw_grid(platform, *front, grid, layout.cursor_row,
-                                   layout.cursor_column, error, error_cap);
+    result = km_platform_draw_grid(app->platform, app->front_grid, grid,
+                                   layout.cursor_row, layout.cursor_column,
+                                   app->error, sizeof(app->error));
     if (result == 0) {
-        km_cell_grid_destroy(*front);
-        *front = grid;
+        km_cell_grid_destroy(app->front_grid);
+        app->front_grid = grid;
     } else {
         km_cell_grid_destroy(grid);
     }
     return result;
 }
 
-int main(int argc, char **argv)
+static void app_destroy(App *app)
 {
-    char platform_error[256] = {0};
-    char message[256] = {0};
-    char completion[4096] = {0};
-    KmPlatform *platform = NULL;
-    KmCellGrid *front_grid = NULL;
-    KmBuffer *initial_buffer = NULL;
-    KmCommandLoop *loop = NULL;
-    AppBuffers buffers = {0};
-    AppWindows windows = {0};
+    km_cell_grid_destroy(app->front_grid);
+    km_command_loop_destroy(app->loop);
+    destroy_windows(&app->windows);
+    destroy_buffers(&app->buffers);
+    km_platform_close(app->platform);
+}
+
+static bool app_initialize(App *app, int argc, char **argv, bool *show_usage)
+{
     KmPath *path = NULL;
     KmFile *file = NULL;
+    KmBuffer *initial_buffer = NULL;
     uint8_t *initial_text = NULL;
     size_t initial_len = 0;
-    KmEvent event;
     KmError core_error;
-    int result = 1;
+    KmStatus status;
+    bool initialized = false;
 
-    if (km_configuration_validate(&core_error) != KM_OK) {
-        set_core_error(platform_error, sizeof(platform_error), &core_error);
-        fprintf(stderr, "km: %s\n", platform_error);
-        return 1;
+    *show_usage = false;
+    status = km_configuration_validate(&core_error);
+    if (status != KM_OK) goto core_failure;
+    status = km_path_from_command_line(argc, argv, &path, &core_error);
+    if (status != KM_OK) {
+        *show_usage = true;
+        goto core_failure;
     }
-    if (km_path_from_command_line(argc, argv, &path, &core_error) != KM_OK) {
-        set_core_error(platform_error, sizeof(platform_error), &core_error);
-        fprintf(stderr, "usage: %s [file]\nkm: %s\n", argv[0], platform_error);
-        return 1;
-    }
-    if (path != NULL &&
-        km_file_load(path, &file, &initial_text, &initial_len,
-                     &core_error) != KM_OK) {
+    if (path != NULL) {
+        status = km_file_load(path, &file, &initial_text, &initial_len,
+                              &core_error);
         path = NULL;
-        set_core_error(platform_error, sizeof(platform_error), &core_error);
-        fprintf(stderr, "km: %s\n", platform_error);
-        return 1;
+        if (status != KM_OK) goto core_failure;
     }
-    path = NULL;
-    if (km_platform_open(&platform, platform_error, sizeof(platform_error)) != 0) {
-        free(initial_text);
-        km_file_destroy(file);
-        fprintf(stderr, "km: %s\n", platform_error);
-        return 1;
+    if (km_platform_open(&app->platform, app->error, sizeof(app->error)) != 0) {
+        goto done;
     }
-    if (!km_platform_is_interactive(platform)) {
-        (void)snprintf(platform_error, sizeof(platform_error),
+    if (!km_platform_is_interactive(app->platform)) {
+        (void)snprintf(app->error, sizeof(app->error),
                        "interactive terminal required");
         goto done;
     }
-    if ((file != NULL
-             ? km_buffer_create_file(file, initial_text, initial_len,
-                                     &initial_buffer, &core_error)
-             : km_buffer_create_base(NULL, 0, &initial_buffer,
-                                     &core_error)) != KM_OK) {
-        set_core_error(platform_error, sizeof(platform_error), &core_error);
-        goto done;
-    }
+    status = file != NULL
+                 ? km_buffer_create_file(file, initial_text, initial_len,
+                                         &initial_buffer, &core_error)
+                 : km_buffer_create_base(NULL, 0, &initial_buffer,
+                                         &core_error);
+    if (status != KM_OK) goto core_failure;
     file = NULL;
     free(initial_text);
     initial_text = NULL;
-    if (append_buffer(&buffers, initial_buffer, &core_error) != KM_OK) {
-        set_core_error(platform_error, sizeof(platform_error), &core_error);
-        goto done;
-    }
+    status = append_buffer(&app->buffers, initial_buffer, &core_error);
+    if (status != KM_OK) goto core_failure;
     initial_buffer = NULL;
-    if (create_initial_window(&windows, buffers.items[0].buffer, &core_error) !=
-            KM_OK ||
-        km_command_loop_create(&loop, &core_error) != KM_OK) {
-        set_core_error(platform_error, sizeof(platform_error), &core_error);
-        goto done;
+    status = create_initial_window(&app->windows,
+                                   app->buffers.items[0].buffer, &core_error);
+    if (status != KM_OK) goto core_failure;
+    status = km_command_loop_create(&app->loop, &core_error);
+    if (status != KM_OK) goto core_failure;
+    initialized = true;
+    goto done;
+
+core_failure:
+    set_core_error(app->error, sizeof(app->error), &core_error);
+done:
+    if (initial_buffer != NULL) (void)km_buffer_destroy(initial_buffer, NULL);
+    free(initial_text);
+    km_file_destroy(file);
+    km_path_destroy(path);
+    return initialized;
+}
+
+static void set_request_message(App *app, KmStatus status,
+                                const KmError *error, const char *success)
+{
+    if (status != KM_OK) {
+        set_core_error(app->message, sizeof(app->message), error);
+    } else if (success != NULL) {
+        (void)snprintf(app->message, sizeof(app->message), "%s", success);
     }
-    if (redraw(platform, &front_grid, &buffers, &windows, message, completion,
-               false, platform_error, sizeof(platform_error)) != 0) {
-        goto done;
-    }
+}
 
-    for (;;) {
-        AppWindow *active = &windows.items[windows.current];
-        KmView *view = active->view;
-        KmStatus status;
+static AppStep app_handle_request(App *app)
+{
+    AppWindow *active = &app->windows.items[app->windows.current];
+    KmView *view = active->view;
+    KmError core_error;
+    KmStatus status;
 
-        buffers.current = active->buffer;
-
-        if (km_platform_read_event(platform, &event, platform_error,
-                                   sizeof(platform_error)) != 0) {
-            goto done;
-        }
-        if (event.kind == KM_EVENT_EOF) {
-            result = 0;
-            break;
-        }
-        status = km_command_loop_dispatch(loop, view, &event, &core_error);
-        if (status == KM_OK) {
-            message[0] = '\0';
-        } else if (status == KM_ERR_INVALID || status == KM_ERR_PERMISSION ||
-                   status == KM_ERR_CANCELLED) {
-            set_core_error(message, sizeof(message), &core_error);
-        } else {
-            set_core_error(platform_error, sizeof(platform_error), &core_error);
-            goto done;
-        }
-        if (km_command_loop_quit_requested(loop)) {
-            (void)snprintf(message, sizeof(message), "Quit");
-            km_command_loop_clear_quit(loop);
-        }
-        switch (km_command_loop_request(loop)) {
+    switch (km_command_loop_request(app->loop)) {
         case KM_COMMAND_REQUEST_SAVE:
-            km_command_loop_clear_request(loop);
-            status = km_buffer_save(buffers.items[buffers.current].buffer,
+            km_command_loop_clear_request(app->loop);
+            status = km_buffer_save(app->buffers.items[app->buffers.current].buffer,
                                     &core_error);
-            if (status == KM_OK) {
-                (void)snprintf(message, sizeof(message), "Wrote");
-            } else {
-                set_core_error(message, sizeof(message), &core_error);
-            }
+            set_request_message(app, status, &core_error, "Wrote");
             break;
         case KM_COMMAND_REQUEST_SAVE_ALL_EXIT:
-            km_command_loop_clear_request(loop);
-            status = save_modified_files(&buffers, &core_error);
+            km_command_loop_clear_request(app->loop);
+            status = save_modified_files(&app->buffers, &core_error);
             if (status != KM_OK) {
-                set_core_error(message, sizeof(message), &core_error);
+                set_request_message(app, status, &core_error, NULL);
                 break;
             }
-            if (!any_modified_buffer(&buffers)) {
-                result = 0;
-                break;
-            }
-            status = km_command_loop_confirm_exit(loop, &core_error);
+            if (!any_modified_buffer(&app->buffers)) return APP_STEP_EXIT;
+            status = km_command_loop_confirm_exit(app->loop, &core_error);
             if (status != KM_OK) {
-                set_core_error(platform_error, sizeof(platform_error),
-                               &core_error);
-                goto done;
+                set_core_error(app->error, sizeof(app->error), &core_error);
+                return APP_STEP_ERROR;
             }
             break;
         case KM_COMMAND_REQUEST_FIND_FILE: {
-            const char *name = km_command_loop_request_text(loop);
-            km_command_loop_clear_request(loop);
-            status = visit_file(&buffers, active,
+            const char *name = km_command_loop_request_text(app->loop);
+            km_command_loop_clear_request(app->loop);
+            status = visit_file(&app->buffers, active,
                                 name[0] == '\0' ? "." : name,
                                 &core_error);
-            if (status == KM_OK) {
-                (void)snprintf(message, sizeof(message), "Opened");
-            } else {
-                set_core_error(message, sizeof(message), &core_error);
-            }
+            set_request_message(app, status, &core_error, "Opened");
             break;
         }
         case KM_COMMAND_REQUEST_SWITCH_BUFFER: {
-            const char *name = km_command_loop_request_text(loop);
+            const char *name = km_command_loop_request_text(app->loop);
             size_t target = name[0] == '\0'
-                                ? (buffers.current + 1) % buffers.count
-                                : find_buffer(&buffers, name);
-            km_command_loop_clear_request(loop);
-            status = switch_buffer(&buffers, active, target, &core_error);
-            if (status == KM_OK) {
-                (void)snprintf(message, sizeof(message), "Switched");
-            } else {
-                set_core_error(message, sizeof(message), &core_error);
-            }
+                                ? (app->buffers.current + 1) % app->buffers.count
+                                : find_buffer(&app->buffers, name);
+            km_command_loop_clear_request(app->loop);
+            status = switch_buffer(&app->buffers, active, target, &core_error);
+            set_request_message(app, status, &core_error, "Switched");
             break;
         }
         case KM_COMMAND_REQUEST_KILL_BUFFER: {
-            km_command_loop_clear_request(loop);
-            status = kill_current_buffer(&buffers, &windows, &core_error);
-            if (status == KM_OK) {
-                (void)snprintf(message, sizeof(message), "Killed");
-            } else {
-                set_core_error(message, sizeof(message), &core_error);
-            }
+            km_command_loop_clear_request(app->loop);
+            status = kill_current_buffer(&app->buffers, &app->windows,
+                                         &core_error);
+            set_request_message(app, status, &core_error, "Killed");
             break;
         }
         case KM_COMMAND_REQUEST_COMPLETE_FILE: {
-            const char *prefix = km_command_loop_request_text(loop);
+            const char *prefix = km_command_loop_request_text(app->loop);
             KmPathCompletions candidates = {0};
-            km_command_loop_clear_request(loop);
+            km_command_loop_clear_request(app->loop);
             status = km_path_completions_utf8(prefix, &candidates,
                                               &core_error);
             if (status == KM_OK) {
                 status = km_command_loop_set_completions(
-                    loop, (const char *const *)candidates.items,
+                    app->loop, (const char *const *)candidates.items,
                     candidates.count, candidates.common, &core_error);
             }
             km_path_completions_destroy(&candidates);
-            if (status != KM_OK) {
-                set_core_error(message, sizeof(message), &core_error);
-            }
+            set_request_message(app, status, &core_error, NULL);
             break;
         }
         case KM_COMMAND_REQUEST_COMPLETE_BUFFER: {
-            const char *prefix = km_command_loop_request_text(loop);
-            km_command_loop_clear_request(loop);
-            status = set_buffer_completions(&buffers, loop, prefix,
+            const char *prefix = km_command_loop_request_text(app->loop);
+            km_command_loop_clear_request(app->loop);
+            status = set_buffer_completions(&app->buffers, app->loop, prefix,
                                             &core_error);
-            if (status != KM_OK) {
-                set_core_error(message, sizeof(message), &core_error);
-            }
+            set_request_message(app, status, &core_error, NULL);
             break;
         }
         case KM_COMMAND_REQUEST_SCROLL_UP:
         case KM_COMMAND_REQUEST_SCROLL_DOWN: {
-            KmCommandRequest request = km_command_loop_request(loop);
-            int64_t argument = km_command_loop_request_argument(loop);
+            KmCommandRequest request = km_command_loop_request(app->loop);
+            int64_t argument = km_command_loop_request_argument(app->loop);
             bool has_argument =
-                km_command_loop_request_has_argument(loop);
+                km_command_loop_request_has_argument(app->loop);
             bool forward = request == KM_COMMAND_REQUEST_SCROLL_UP;
             size_t *scroll_row = &active->scroll_row;
             unsigned columns;
             unsigned rows;
             size_t layout_rows;
-            if (km_command_loop_request_page_opposite(loop)) {
+            if (km_command_loop_request_page_opposite(app->loop)) {
                 forward = !forward;
                 has_argument = false;
             }
-            km_command_loop_clear_request(loop);
-            km_platform_size(platform, &columns, &rows);
+            km_command_loop_clear_request(app->loop);
+            km_platform_size(app->platform, &columns, &rows);
             layout_rows = active->rows + (rows > 1 ? 1u : 0u);
             status = km_layout_scroll_view(
-                buffers.items[buffers.current].buffer, view, layout_rows,
+                app->buffers.items[app->buffers.current].buffer, view,
+                layout_rows,
                 columns,
                 *scroll_row, forward, has_argument, argument, scroll_row,
                 &core_error);
-            if (status != KM_OK) {
-                set_core_error(message, sizeof(message), &core_error);
-            }
+            set_request_message(app, status, &core_error, NULL);
             break;
         }
         case KM_COMMAND_REQUEST_RECENTER: {
             size_t *scroll_row = &active->scroll_row;
             KmCellGrid *scratch = NULL;
             KmLayoutResult layout;
-            int64_t argument = km_command_loop_request_argument(loop);
+            int64_t argument = km_command_loop_request_argument(app->loop);
             bool has_argument =
-                km_command_loop_request_has_argument(loop);
+                km_command_loop_request_has_argument(app->loop);
             unsigned columns;
             unsigned rows;
             size_t layout_rows;
 
-            km_command_loop_clear_request(loop);
-            km_platform_size(platform, &columns, &rows);
+            km_command_loop_clear_request(app->loop);
+            km_platform_size(app->platform, &columns, &rows);
             layout_rows = active->rows + (rows > 1 ? 1u : 0u);
             status = km_layout_view(
-                buffers.items[buffers.current].buffer, view, layout_rows,
+                app->buffers.items[app->buffers.current].buffer, view,
+                layout_rows,
                 columns,
                 *scroll_row, NULL, NULL, false, &scratch, &layout,
                 &core_error);
             if (status != KM_OK) {
-                set_core_error(message, sizeof(message), &core_error);
+                set_request_message(app, status, &core_error, NULL);
                 break;
             }
             km_cell_grid_destroy(scratch);
             status = km_layout_recenter_scroll(
                 &layout, layout_rows, has_argument, argument, scroll_row,
                 &core_error);
-            if (status != KM_OK) {
-                set_core_error(message, sizeof(message), &core_error);
-            }
+            set_request_message(app, status, &core_error, NULL);
             break;
         }
         case KM_COMMAND_REQUEST_MOVE_TO_WINDOW_LINE: {
-            int64_t argument = km_command_loop_request_argument(loop);
+            int64_t argument = km_command_loop_request_argument(app->loop);
             bool has_argument =
-                km_command_loop_request_has_argument(loop);
+                km_command_loop_request_has_argument(app->loop);
             unsigned columns;
             unsigned rows;
 
-            km_command_loop_clear_request(loop);
-            km_platform_size(platform, &columns, &rows);
+            km_command_loop_clear_request(app->loop);
+            km_platform_size(app->platform, &columns, &rows);
             status = km_layout_move_to_window_line(
-                buffers.items[buffers.current].buffer, view,
+                app->buffers.items[app->buffers.current].buffer, view,
                 active->rows + (rows > 1 ? 1u : 0u), columns,
                 active->scroll_row, has_argument,
                 argument, &core_error);
-            if (status != KM_OK) {
-                set_core_error(message, sizeof(message), &core_error);
-            }
+            set_request_message(app, status, &core_error, NULL);
             break;
         }
         case KM_COMMAND_REQUEST_GLOBAL_DISPLAY_LINE_NUMBERS_MODE: {
-            bool enabled = km_command_loop_request_argument(loop) > 0;
-            km_command_loop_clear_request(loop);
-            set_global_display_line_numbers(&buffers, enabled);
+            bool enabled = km_command_loop_request_argument(app->loop) > 0;
+            km_command_loop_clear_request(app->loop);
+            set_global_display_line_numbers(&app->buffers, enabled);
             break;
         }
         case KM_COMMAND_REQUEST_SPLIT_WINDOW_BELOW: {
             unsigned columns;
             unsigned rows;
             (void)columns;
-            km_command_loop_clear_request(loop);
-            km_platform_size(platform, &columns, &rows);
-            status = split_window_below(&windows, rows, &core_error);
-            if (status != KM_OK) {
-                set_core_error(message, sizeof(message), &core_error);
-            }
+            km_command_loop_clear_request(app->loop);
+            km_platform_size(app->platform, &columns, &rows);
+            status = split_window_below(&app->windows, rows, &core_error);
+            set_request_message(app, status, &core_error, NULL);
             break;
         }
         case KM_COMMAND_REQUEST_DELETE_WINDOW:
-            km_command_loop_clear_request(loop);
-            status = delete_window(&windows, &core_error);
-            if (status != KM_OK) {
-                set_core_error(message, sizeof(message), &core_error);
-            }
-            buffers.current = windows.items[windows.current].buffer;
+            km_command_loop_clear_request(app->loop);
+            status = delete_window(&app->windows, &core_error);
+            set_request_message(app, status, &core_error, NULL);
+            app->buffers.current =
+                app->windows.items[app->windows.current].buffer;
             break;
         case KM_COMMAND_REQUEST_DELETE_OTHER_WINDOWS:
-            km_command_loop_clear_request(loop);
-            status = delete_other_windows(&windows, &core_error);
-            if (status != KM_OK) {
-                set_core_error(message, sizeof(message), &core_error);
-            }
-            buffers.current = windows.items[windows.current].buffer;
+            km_command_loop_clear_request(app->loop);
+            status = delete_other_windows(&app->windows, &core_error);
+            set_request_message(app, status, &core_error, NULL);
+            app->buffers.current =
+                app->windows.items[app->windows.current].buffer;
             break;
         case KM_COMMAND_REQUEST_OTHER_WINDOW: {
-            int64_t argument = km_command_loop_request_argument(loop);
-            km_command_loop_clear_request(loop);
-            status = other_window(&windows, argument, &core_error);
-            if (status != KM_OK) {
-                set_core_error(message, sizeof(message), &core_error);
-            }
-            buffers.current = windows.items[windows.current].buffer;
+            int64_t argument = km_command_loop_request_argument(app->loop);
+            km_command_loop_clear_request(app->loop);
+            status = other_window(&app->windows, argument, &core_error);
+            set_request_message(app, status, &core_error, NULL);
+            app->buffers.current =
+                app->windows.items[app->windows.current].buffer;
             break;
         }
         case KM_COMMAND_REQUEST_LIST_BUFFERS: {
             unsigned columns;
             unsigned rows;
             (void)columns;
-            km_command_loop_clear_request(loop);
-            km_platform_size(platform, &columns, &rows);
-            status = list_buffers(&buffers, &windows, rows, &core_error);
-            if (status != KM_OK) {
-                set_core_error(message, sizeof(message), &core_error);
-            }
+            km_command_loop_clear_request(app->loop);
+            km_platform_size(app->platform, &columns, &rows);
+            status = list_buffers(&app->buffers, &app->windows, rows,
+                                  &core_error);
+            set_request_message(app, status, &core_error, NULL);
             break;
         }
         case KM_COMMAND_REQUEST_EXIT:
-            km_command_loop_clear_request(loop);
-            if (!any_modified_buffer(&buffers)) {
-                result = 0;
-                break;
-            }
-            status = km_command_loop_confirm_exit(loop, &core_error);
+            km_command_loop_clear_request(app->loop);
+            if (!any_modified_buffer(&app->buffers)) return APP_STEP_EXIT;
+            status = km_command_loop_confirm_exit(app->loop, &core_error);
             if (status != KM_OK) {
-                set_core_error(platform_error, sizeof(platform_error),
-                               &core_error);
-                goto done;
+                set_core_error(app->error, sizeof(app->error), &core_error);
+                return APP_STEP_ERROR;
             }
             break;
         case KM_COMMAND_REQUEST_EXIT_CONFIRMED:
-            km_command_loop_clear_request(loop);
-            result = 0;
-            break;
+            km_command_loop_clear_request(app->loop);
+            return APP_STEP_EXIT;
         case KM_COMMAND_REQUEST_NONE:
         default:
             break;
-        }
-        if (result == 0) break;
-        if (km_command_loop_search_active(loop) ||
-            km_command_loop_prompt_active(loop)) {
-            km_command_loop_format_prompt(loop, message, sizeof(message));
-            km_command_loop_format_completions(loop, completion,
-                                               sizeof(completion));
-        } else {
-            completion[0] = '\0';
-        }
-        if (redraw(platform, &front_grid, &buffers, &windows, message,
-                   completion, km_command_loop_search_active(loop) ||
-                       km_command_loop_prompt_active(loop),
-                   platform_error, sizeof(platform_error)) != 0) {
-            goto done;
-        }
     }
+    return APP_STEP_CONTINUE;
+}
 
-done:
-    km_cell_grid_destroy(front_grid);
-    km_command_loop_destroy(loop);
-    destroy_windows(&windows);
-    destroy_buffers(&buffers);
-    if (initial_buffer != NULL) (void)km_buffer_destroy(initial_buffer, NULL);
-    free(initial_text);
-    km_file_destroy(file);
-    km_path_destroy(path);
-    km_platform_close(platform);
-    if (result != 0) fprintf(stderr, "km: %s\n", platform_error);
+static AppStep app_process_event(App *app)
+{
+    AppWindow *active = &app->windows.items[app->windows.current];
+    KmEvent event;
+    KmError core_error;
+    KmStatus status;
+    AppStep step;
+    bool prompt_active;
+
+    app->buffers.current = active->buffer;
+    if (km_platform_read_event(app->platform, &event, app->error,
+                               sizeof(app->error)) != 0) {
+        return APP_STEP_ERROR;
+    }
+    if (event.kind == KM_EVENT_EOF) return APP_STEP_EXIT;
+    status = km_command_loop_dispatch(app->loop, active->view, &event,
+                                      &core_error);
+    if (status == KM_OK) {
+        app->message[0] = '\0';
+    } else if (status == KM_ERR_INVALID || status == KM_ERR_PERMISSION ||
+               status == KM_ERR_CANCELLED) {
+        set_core_error(app->message, sizeof(app->message), &core_error);
+    } else {
+        set_core_error(app->error, sizeof(app->error), &core_error);
+        return APP_STEP_ERROR;
+    }
+    if (km_command_loop_quit_requested(app->loop)) {
+        (void)snprintf(app->message, sizeof(app->message), "Quit");
+        km_command_loop_clear_quit(app->loop);
+    }
+    step = app_handle_request(app);
+    if (step != APP_STEP_CONTINUE) return step;
+    prompt_active = km_command_loop_search_active(app->loop) ||
+                    km_command_loop_prompt_active(app->loop);
+    if (prompt_active) {
+        km_command_loop_format_prompt(app->loop, app->message,
+                                      sizeof(app->message));
+        km_command_loop_format_completions(app->loop, app->completion,
+                                           sizeof(app->completion));
+    } else {
+        app->completion[0] = '\0';
+    }
+    return redraw(app, prompt_active) == 0 ? APP_STEP_CONTINUE
+                                           : APP_STEP_ERROR;
+}
+
+static int app_run(App *app)
+{
+    AppStep step;
+
+    if (redraw(app, false) != 0) return 1;
+    do {
+        step = app_process_event(app);
+    } while (step == APP_STEP_CONTINUE);
+    return step == APP_STEP_EXIT ? 0 : 1;
+}
+
+static int app_main(int argc, char **argv)
+{
+    App app = {0};
+    bool show_usage;
+    int result = 1;
+
+    if (app_initialize(&app, argc, argv, &show_usage)) result = app_run(&app);
+    app_destroy(&app);
+    if (result != 0) {
+        if (show_usage) fprintf(stderr, "usage: %s [file]\n", argv[0]);
+        fprintf(stderr, "km: %s\n", app.error);
+    }
     return result;
+}
+
+int main(int argc, char **argv)
+{
+    return app_main(argc, argv);
 }
